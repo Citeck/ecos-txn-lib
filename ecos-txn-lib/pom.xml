@@ -13,6 +13,21 @@
         <version>${revision}</version>
     </parent>
 
+    <properties>
+        <javax.jta.version>1.1</javax.jta.version>
+    </properties>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>javax.transaction</groupId>
+            <artifactId>jta</artifactId>
+            <version>${javax.jta.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+    </dependencies>
+
     <build>
         <plugins>
 

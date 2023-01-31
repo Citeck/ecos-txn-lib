@@ -19,15 +19,63 @@
         <maven.compiler.target>1.8</maven.compiler.target>
         <maven.compiler.source>1.8</maven.compiler.source>
 
+        <ecos.jackson.version>2.10.4.3</ecos.jackson.version>
+        <ecos.snakeyaml.version>2.2.0</ecos.snakeyaml.version>
+        <ecos.commons.version>2.12.1</ecos.commons.version>
+        <ecos.webapp-api.version>1.6.1</ecos.webapp-api.version>
+
         <junit.version>5.4.0</junit.version>
         <assertj-core.version>3.19.0</assertj-core.version>
 
         <slf4j.version>1.7.28</slf4j.version>
         <kotlin.version>1.7.10</kotlin.version>
+        <kotlin.logging.version>1.12.5</kotlin.logging.version>
 
     </properties>
 
     <dependencies>
+
+        <dependency>
+            <groupId>ru.citeck.ecos.commons</groupId>
+            <artifactId>ecos-commons</artifactId>
+            <version>${ecos.commons.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>ru.citeck.ecos.commons</groupId>
+            <artifactId>ecos-commons-test</artifactId>
+            <version>${ecos.commons.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>ru.citeck.ecos</groupId>
+            <artifactId>ecos-snakeyaml</artifactId>
+            <version>${ecos.snakeyaml.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>ru.citeck.ecos</groupId>
+            <artifactId>ecos-jackson</artifactId>
+            <version>${ecos.jackson.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>ru.citeck.ecos.webapp</groupId>
+            <artifactId>ecos-webapp-api</artifactId>
+            <version>${ecos.webapp-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.github.microutils</groupId>
+            <artifactId>kotlin-logging</artifactId>
+            <version>${kotlin.logging.version}</version>
+            <scope>provided</scope>
+        </dependency>
 
         <dependency>
             <groupId>org.slf4j</groupId>
@@ -39,6 +87,13 @@
         <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-stdlib</artifactId>
+            <version>${kotlin.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-reflect</artifactId>
             <version>${kotlin.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -195,14 +250,14 @@
     <repositories>
         <repository>
             <id>citeck-public</id>
-            <url>http://nexus.citeck.ru/repository/maven-public</url>
+            <url>https://nexus.citeck.ru/repository/maven-public</url>
         </repository>
     </repositories>
 
     <pluginRepositories>
         <pluginRepository>
             <id>citeck-plugin-public</id>
-            <url>http://nexus.citeck.ru/repository/maven-public</url>
+            <url>https://nexus.citeck.ru/repository/maven-public</url>
         </pluginRepository>
     </pluginRepositories>
 
