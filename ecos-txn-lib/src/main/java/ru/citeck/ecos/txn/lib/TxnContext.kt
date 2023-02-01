@@ -93,6 +93,54 @@ object TxnContext {
         doAfterRollback(order, async, action.asKtFunc())
     }
 
+    fun <T> processSetAfterCommit(key: Any, element: T, action: (Set<T>) -> Unit) {
+        processSet(key, TxnActionType.AFTER_COMMIT, element, action)
+    }
+
+    fun <T> processListAfterCommit(key: Any, element: T, action: (List<T>) -> Unit) {
+        processList(key, TxnActionType.AFTER_COMMIT, element, action)
+    }
+
+    fun <T> processSetBeforeCommit(key: Any, element: T, action: (Set<T>) -> Unit) {
+        processSet(key, TxnActionType.BEFORE_COMMIT, element, action)
+    }
+
+    fun <T> processListBeforeCommit(key: Any, element: T, action: (List<T>) -> Unit) {
+        processList(key, TxnActionType.BEFORE_COMMIT, element, action)
+    }
+
+    private fun <T> processSet(key: Any, actionType: TxnActionType, element: T, action: (Set<T>) -> Unit) {
+        processCollection(key, actionType, element, 0f, false, { LinkedHashSet() }, action)
+    }
+
+    private fun <T> processList(key: Any, actionType: TxnActionType, element: T, action: (List<T>) -> Unit) {
+        processCollection(key, actionType, element, 0f, false, { ArrayList() }, action)
+    }
+
+    private fun <T, C : MutableCollection<T>> processCollection(
+        key: Any,
+        actionType: TxnActionType,
+        element: T,
+        order: Float,
+        async: Boolean,
+        createNewCollection: () -> C,
+        action: (C) -> Unit
+    ) {
+
+        val txn = getTxnOrNull()
+        if (txn == null) {
+            val collection = createNewCollection()
+            collection.add(element)
+            action.invoke(collection)
+            return
+        }
+        val collection = txn.getData(key) { createNewCollection() }
+        if (collection.isEmpty()) {
+            txn.addAction(actionType, order, async) { action.invoke(collection) }
+        }
+        collection.add(element)
+    }
+
     @JvmStatic
     fun getTxn(): Transaction {
         return getTxnOrNull() ?: error("Transaction doesn't exists")
