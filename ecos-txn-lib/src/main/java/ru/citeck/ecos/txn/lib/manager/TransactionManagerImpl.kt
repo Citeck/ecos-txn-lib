@@ -273,7 +273,7 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
                 .header(TxnManagerWebExecutor.HEADER_TXN_ID, transaction.getId())
                 .header(TxnManagerWebExecutor.HEADER_TYPE, TxnManagerWebExecutor.TYPE_EXEC_ACTION)
                 .header(TxnManagerWebExecutor.HEADER_ACTION_ID, actionRef.id)
-                .execute {}
+                .execute {}.get()
         }
     }
 
