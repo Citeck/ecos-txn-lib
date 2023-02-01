@@ -1,26 +1,21 @@
 package ru.citeck.ecos.txn.lib.resource.type.xa
 
-import ru.citeck.ecos.commons.utils.NameUtils
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import java.util.*
-import java.util.concurrent.atomic.AtomicLong
 import javax.transaction.xa.Xid
 
 class TxnXid(id: TxnId, currentAppName: String, currentAppInstanceId: String) : Xid {
 
     companion object {
         private const val FORMAT_ID = 90
-        private val NAME_ESCAPER = NameUtils.getEscaperWithAllowedChars("-.")
-        private val counter = AtomicLong(0)
     }
 
     private val globalTxnIdBytes = id.toString().toByteArray(Charsets.UTF_8)
 
-    private val txnBranchIdBytes = (
-        NAME_ESCAPER.escape(currentAppName) + ":" +
-            NAME_ESCAPER.escape(currentAppInstanceId) +
-            ":" + counter.getAndIncrement().toString(36)
-        ).toByteArray(Charsets.UTF_8)
+    private val txnBranchIdBytes = TxnId.create(
+        currentAppName,
+        currentAppInstanceId
+    ).toString().toByteArray(Charsets.UTF_8)
 
     override fun getFormatId(): Int {
         return FORMAT_ID

@@ -46,11 +46,13 @@ class TransactionImpl(
 
     override fun <K : Any, T : TransactionResource> getOrAddRes(key: K, resource: (K, TxnId) -> T): T {
         debug { "getOrAddRes with key $key" }
-        checkStatus(TransactionStatus.ACTIVE)
         val currentResource = resourcesByKey[key]
         val resourceRes = if (currentResource != null) {
             currentResource.resource
         } else {
+            if (txnStatus != TransactionStatus.ACTIVE) {
+                error("[$txnId] Resource can't be added when transaction is not active. Key: $key")
+            }
             debug { "Create new resource for key $key" }
             val res = resource.invoke(key, txnId)
             res.start()
@@ -272,7 +274,6 @@ class TransactionImpl(
             }
         }
         debug { "Update status ${this.txnStatus} -> $newStatus" }
-        val statusBefore = this.txnStatus
         this.txnStatus = newStatus
         if (this.txnStatus == TransactionStatus.ROLLED_BACK || this.txnStatus == TransactionStatus.COMMITTED) {
             synchronizations.forEach {

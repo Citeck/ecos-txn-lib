@@ -105,16 +105,40 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
     }
 
     private fun <T> doInExtTxn(extTxnId: TxnId, readOnly: Boolean, ctx: TxnManagerContext, action: () -> T): T {
+        var isNewLocalTxn = false
         val transaction = transactionsById.computeIfAbsent(extTxnId) {
+            isNewLocalTxn = true
             val txn = TransactionImpl(it, webAppProps.appName)
             txn.start()
             txn
         }
-        val result = doWithinTxn(transaction, readOnly, ctx, action)
-        if (transaction.isEmpty()) {
-            transaction.dispose()
+        var success = true
+        val result = try {
+            doWithinTxn(transaction, readOnly, ctx, action)
+        } catch (e: Throwable) {
+            success = false
+            throw e
+        } finally {
+            if (isNewLocalTxn && (transaction.isEmpty() || readOnly)) {
+                transaction.doWithinTxn(ctx, readOnly) {
+                    try {
+                        if (success) {
+                            transaction.onePhaseCommit()
+                        } else {
+                            transaction.rollback()
+                        }
+                    } catch (e: Throwable) {
+                        log.error(e) { "[${transaction.getId()}] Error while complete local-external transaction" }
+                    }
+                    try {
+                        transaction.dispose()
+                    } catch (e: Throwable) {
+                        log.error(e) { "[${transaction.getId()}] Error while dispose local-external transaction" }
+                    }
+                }
+                transactionsById.remove(extTxnId)
+            }
         }
-        transactionsById.remove(extTxnId)
         return result
     }
 
