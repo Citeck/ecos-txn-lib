@@ -6,8 +6,11 @@ import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import java.lang.RuntimeException
+import java.time.Instant
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.collections.ArrayList
 import kotlin.collections.HashMap
 import kotlin.collections.LinkedHashMap
@@ -37,6 +40,9 @@ class TransactionImpl(
     private val synchronizations = ArrayList<TransactionSynchronization>()
 
     private val data = LinkedHashMap<Any, Any?>()
+
+    private val isIdle = AtomicBoolean(true)
+    private val lastActiveTime = AtomicReference(Instant.now())
 
     override fun start() {
         debug { "txn start" }
@@ -83,10 +89,15 @@ class TransactionImpl(
     override fun <T> doWithinTxn(managerCtx: TxnManagerContext, readOnly: Boolean, action: () -> T): T {
         val prevContext = this.txnManagerContext
         this.txnManagerContext = managerCtx
+        val idleBefore = isIdle.get()
+        isIdle.set(false)
+        lastActiveTime.set(Instant.now())
         try {
             return doWithReadOnlyFlag(readOnly, action)
         } finally {
             this.txnManagerContext = prevContext
+            isIdle.set(idleBefore)
+            lastActiveTime.set(Instant.now())
         }
     }
 
@@ -268,6 +279,7 @@ class TransactionImpl(
         if (newStatus == this.txnStatus) {
             return
         }
+        lastActiveTime.set(Instant.now())
         if (newStatus == TransactionStatus.PREPARING || newStatus == TransactionStatus.COMMITTING) {
             synchronizations.forEach {
                 it.beforeCompletion()
@@ -284,6 +296,15 @@ class TransactionImpl(
                 }
             }
         }
+        lastActiveTime.set(Instant.now())
+    }
+
+    override fun isIdle(): Boolean {
+        return isIdle.get()
+    }
+
+    override fun getLastActiveTime(): Instant {
+        return lastActiveTime.get()
     }
 
     override fun <T : Any> getData(key: Any): T? {

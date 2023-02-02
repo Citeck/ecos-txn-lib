@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.manager
 
 import mu.KotlinLogging
+import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.api.TxnManagerWebExecutor
@@ -8,8 +9,6 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.*
 import ru.citeck.ecos.webapp.api.EcosWebAppApi
-import java.time.Duration
-import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -20,29 +19,71 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
 
     companion object {
         private val log = KotlinLogging.logger {}
+
+        private const val HEALTH_CHECK_PERIOD_MS = 20_000
+        private const val MAX_NON_ALIVE_TIME_MS = 60_000
     }
 
     private val webAppProps = webAppApi.getProperties()
     private val txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
     private val webClientApi = webAppApi.getWebClientApi()
+    private val remoteWebAppsApi = webAppApi.getRemoteWebAppsApi()
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
-    private val transactionsById = ConcurrentHashMap<TxnId, ManagedTransaction>()
+    private val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
 
     init {
         val watcherThreadActive = AtomicBoolean(true)
         thread(start = true, name = "active-transactions-watcher") {
             while (watcherThreadActive.get()) {
-                if (transactionsById.isNotEmpty()) {
-                    log.info {
-                        "Active transactions: ${transactionsById.values.map {
-                            it.getId().toString() + " - " + it.getStatus() + " - isEmpty: " + it.isEmpty()
-                        }}"
-                    }
-                    val createdTimeToClean = Instant.now().minus(Duration.ofHours(1))
-                    val keys = transactionsById.keys().toList()
-                    for (txnId in keys) {
-                        if (txnId.created.isBefore(createdTimeToClean)) {
+                Thread.sleep(10000)
+                if (transactionsById.isEmpty()) {
+                    continue
+                }
+                try {
+                    val transactionIds = transactionsById.keys.toList()
+                    val prevHealthCheckTime = System.currentTimeMillis() - HEALTH_CHECK_PERIOD_MS
+                    val nonAliveTime = System.currentTimeMillis() - MAX_NON_ALIVE_TIME_MS
+                    for (txnId in transactionIds) {
+                        val txnInfo = transactionsById[txnId] ?: continue
+                        if (!txnInfo.transaction.isIdle()) {
+                            txnInfo.lastAliveTime = System.currentTimeMillis()
+                            continue
+                        }
+                        val lastActiveTime = txnInfo.transaction.getLastActiveTime().toEpochMilli()
+                        if (txnInfo.lastAliveTime < lastActiveTime) {
+                            txnInfo.lastAliveTime = lastActiveTime
+                        }
+                        if (txnInfo.lastAliveTime < prevHealthCheckTime && txnId.appName != webAppProps.appName) {
+                            val appRef = txnId.appName + ":" + txnId.appInstanceId
+                            AuthContext.runAsSystem {
+                                if (remoteWebAppsApi.isAppAvailable(appRef)) {
+                                    try {
+                                        webClientApi.newRequest()
+                                            .targetApp(appRef)
+                                            .path(TxnManagerWebExecutor.PATH)
+                                            .header(TxnManagerWebExecutor.HEADER_TXN_ID, txnId)
+                                            .header(
+                                                TxnManagerWebExecutor.HEADER_TYPE,
+                                                TxnManagerWebExecutor.TYPE_GET_STATUS
+                                            )
+                                            .execute {
+                                                val status = it.getBodyReader()
+                                                    .readDto(TxnManagerWebExecutor.GetStatusResp::class.java).status
+
+                                                if (status == TransactionStatus.NO_TRANSACTION) {
+                                                    txnInfo.lastAliveTime = 0L
+                                                } else {
+                                                    txnInfo.lastAliveTime = System.currentTimeMillis()
+                                                }
+                                            }.get()
+                                    } catch (e: Throwable) {
+                                        log.warn(e) { "[$txnId] Exception while transaction status checking" }
+                                    }
+                                }
+                            }
+                        }
+                        if (txnInfo.lastAliveTime < nonAliveTime) {
                             log.info { "[$txnId] Dispose stuck transaction" }
                             try {
                                 dispose(txnId)
@@ -51,8 +92,13 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
                             }
                         }
                     }
+                } catch (e: Throwable) {
+                    if (e is InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        throw e
+                    }
+                    log.error(e) { "Exception in active-transactions-watcher" }
                 }
-                Thread.sleep(30000)
             }
         }
         Runtime.getRuntime().addShutdownHook(
@@ -119,13 +165,16 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
     }
 
     private fun <T> doInExtTxn(extTxnId: TxnId, readOnly: Boolean, ctx: TxnManagerContext, action: () -> T): T {
+
         var isNewLocalTxn = false
+
         val transaction = transactionsById.computeIfAbsent(extTxnId) {
             isNewLocalTxn = true
             val txn = TransactionImpl(it, webAppProps.appName)
             txn.start()
-            txn
-        }
+            TransactionInfo(txn)
+        }.transaction
+
         var success = true
         val result = try {
             doWithinTxn(transaction, readOnly, ctx, action)
@@ -182,7 +231,7 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
         val transaction = TransactionImpl(newTxnId, webAppProps.appName)
         return doWithinTxn(transaction, readOnly, txnManagerContext) {
             try {
-                transactionsById[newTxnId] = transaction
+                transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
                 val actionRes = action.invoke()
                 if (!readOnly) {
@@ -281,13 +330,15 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
         if (actionRef.appName == webAppProps.appName) {
             transaction.executeAction(actionRef.id)
         } else {
-            webClientApi.newRequest()
-                .targetApp(actionRef.appName)
-                .path(TxnManagerWebExecutor.PATH)
-                .header(TxnManagerWebExecutor.HEADER_TXN_ID, transaction.getId())
-                .header(TxnManagerWebExecutor.HEADER_TYPE, TxnManagerWebExecutor.TYPE_EXEC_ACTION)
-                .header(TxnManagerWebExecutor.HEADER_ACTION_ID, actionRef.id)
-                .execute {}.get()
+            AuthContext.runAsSystem {
+                webClientApi.newRequest()
+                    .targetApp(actionRef.appName)
+                    .path(TxnManagerWebExecutor.PATH)
+                    .header(TxnManagerWebExecutor.HEADER_TXN_ID, transaction.getId())
+                    .header(TxnManagerWebExecutor.HEADER_TYPE, TxnManagerWebExecutor.TYPE_EXEC_ACTION)
+                    .header(TxnManagerWebExecutor.HEADER_ACTION_ID, actionRef.id)
+                    .execute {}.get()
+            }
         }
     }
 
@@ -312,11 +363,15 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
     }
 
     private fun getRequiredExtTxn(txnId: TxnId): ManagedTransaction {
-        return transactionsById[txnId] ?: error("Transaction is not found: '$txnId'")
+        return transactionsById[txnId]?.transaction ?: error("Transaction is not found: '$txnId'")
     }
 
     override fun dispose(txnId: TxnId) {
-        transactionsById.remove(txnId)?.dispose()
+        transactionsById.remove(txnId)?.transaction?.dispose()
+    }
+
+    override fun getStatus(txnId: TxnId): TransactionStatus {
+        return transactionsById[txnId]?.transaction?.getStatus() ?: TransactionStatus.NO_TRANSACTION
     }
 
     private class TxnActionRefWithIdx(val ref: TxnActionRef, val index: Int) : Comparable<TxnActionRefWithIdx> {
@@ -333,4 +388,9 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
             return ref.id
         }
     }
+
+    private class TransactionInfo(
+        val transaction: ManagedTransaction,
+        var lastAliveTime: Long = System.currentTimeMillis()
+    )
 }

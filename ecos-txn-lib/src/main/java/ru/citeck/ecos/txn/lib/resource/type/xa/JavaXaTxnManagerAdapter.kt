@@ -74,7 +74,7 @@ class JavaXaTxnManagerAdapter(val props: EcosWebAppProps) : TransactionManager {
 
         override fun getStatus(): Int {
             return when (transaction.getStatus()) {
-                TransactionStatus.NEW -> Status.STATUS_NO_TRANSACTION
+                TransactionStatus.NEW -> Status.STATUS_ACTIVE
                 TransactionStatus.ACTIVE -> Status.STATUS_ACTIVE
                 TransactionStatus.PREPARING -> Status.STATUS_PREPARING
                 TransactionStatus.PREPARED -> Status.STATUS_PREPARED
@@ -83,6 +83,7 @@ class JavaXaTxnManagerAdapter(val props: EcosWebAppProps) : TransactionManager {
                 TransactionStatus.ROLLING_BACK -> Status.STATUS_ROLLING_BACK
                 TransactionStatus.ROLLED_BACK -> Status.STATUS_ROLLEDBACK
                 TransactionStatus.DISPOSED -> Status.STATUS_NO_TRANSACTION
+                TransactionStatus.NO_TRANSACTION -> Status.STATUS_NO_TRANSACTION
             }
         }
 

@@ -12,7 +12,7 @@
 
     <properties>
 
-        <revision>1.0.4</revision>
+        <revision>1.0.5</revision>
 
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
@@ -23,6 +23,7 @@
         <ecos.snakeyaml.version>2.2.0</ecos.snakeyaml.version>
         <ecos.commons.version>2.12.1</ecos.commons.version>
         <ecos.webapp-api.version>1.6.1</ecos.webapp-api.version>
+        <ecos.context-lib.version>1.3.2</ecos.context-lib.version>
 
         <junit.version>5.4.0</junit.version>
         <assertj-core.version>3.19.0</assertj-core.version>
@@ -67,6 +68,13 @@
             <groupId>ru.citeck.ecos.webapp</groupId>
             <artifactId>ecos-webapp-api</artifactId>
             <version>${ecos.webapp-api.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>ru.citeck.ecos.context</groupId>
+            <artifactId>ecos-context-lib</artifactId>
+            <version>${ecos.context-lib.version}</version>
             <scope>provided</scope>
         </dependency>
 

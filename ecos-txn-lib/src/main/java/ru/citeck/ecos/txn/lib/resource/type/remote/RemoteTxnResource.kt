@@ -1,5 +1,6 @@
 package ru.citeck.ecos.txn.lib.resource.type.remote
 
+import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.manager.api.TxnManagerWebExecutor
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
@@ -52,11 +53,13 @@ class RemoteTxnResource(
     }
 
     private fun <T> execRequest(type: String, result: (EcosWebClientResp) -> T): T {
-        return webClient.newRequest()
-            .targetApp(appName)
-            .path(TxnManagerWebExecutor.PATH)
-            .header(TxnManagerWebExecutor.HEADER_TYPE, type)
-            .header(TxnManagerWebExecutor.HEADER_TXN_ID, txnId)
-            .execute(result).get()
+        return AuthContext.runAsSystem {
+            webClient.newRequest()
+                .targetApp(appName)
+                .path(TxnManagerWebExecutor.PATH)
+                .header(TxnManagerWebExecutor.HEADER_TYPE, type)
+                .header(TxnManagerWebExecutor.HEADER_TXN_ID, txnId)
+                .execute(result).get()
+        }
     }
 }

@@ -9,5 +9,6 @@ enum class TransactionStatus {
     COMMITTED,
     ROLLING_BACK,
     ROLLED_BACK,
-    DISPOSED
+    DISPOSED,
+    NO_TRANSACTION
 }

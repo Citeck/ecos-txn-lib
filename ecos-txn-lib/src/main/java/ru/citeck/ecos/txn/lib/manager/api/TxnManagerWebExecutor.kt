@@ -1,7 +1,9 @@
 package ru.citeck.ecos.txn.lib.manager.api
 
+import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.manager.TransactionManager
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
+import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.webapp.api.web.executor.EcosWebExecutor
 import ru.citeck.ecos.webapp.api.web.executor.EcosWebExecutorReq
@@ -22,9 +24,15 @@ class TxnManagerWebExecutor(private val manager: TransactionManager) : EcosWebEx
         const val TYPE_DISPOSE = "dispose"
         const val TYPE_ROLLBACK = "rollback"
         const val TYPE_EXEC_ACTION = "exec-action"
+        const val TYPE_GET_STATUS = "get-status"
     }
 
     override fun execute(request: EcosWebExecutorReq, response: EcosWebExecutorResp) {
+
+        if (!AuthContext.isRunAsSystem()) {
+            error("Permission denied")
+        }
+
         val headers = request.getHeaders()
 
         val type = headers.get(HEADER_TYPE) ?: error("Type is not defined")
@@ -46,6 +54,9 @@ class TxnManagerWebExecutor(private val manager: TransactionManager) : EcosWebEx
                     ?: error("Header $HEADER_ACTION_ID is not defined")
                 manager.executeAction(txnId, actionId)
             }
+            TYPE_GET_STATUS -> {
+                response.getBodyWriter().writeDto(GetStatusResp(manager.getStatus(txnId)))
+            }
         }
     }
 
@@ -54,5 +65,9 @@ class TxnManagerWebExecutor(private val manager: TransactionManager) : EcosWebEx
 
     data class PrepareCommitResp(
         val status: CommitPrepareStatus
+    )
+
+    data class GetStatusResp(
+        val status: TransactionStatus
     )
 }

@@ -3,6 +3,7 @@ package ru.citeck.ecos.txn.lib.transaction
 import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
+import java.time.Instant
 
 interface Transaction {
 
@@ -25,6 +26,10 @@ interface Transaction {
     fun isCompleted(): Boolean
 
     fun isEmpty(): Boolean
+
+    fun isIdle(): Boolean
+
+    fun getLastActiveTime(): Instant
 
     fun <T : Any> getData(key: Any): T?
 
