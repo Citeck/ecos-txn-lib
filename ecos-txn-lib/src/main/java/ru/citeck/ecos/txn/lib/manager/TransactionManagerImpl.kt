@@ -8,6 +8,8 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.*
 import ru.citeck.ecos.webapp.api.EcosWebAppApi
+import java.time.Duration
+import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -37,8 +39,20 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
                             it.getId().toString() + " - " + it.getStatus() + " - isEmpty: " + it.isEmpty()
                         }}"
                     }
+                    val createdTimeToClean = Instant.now().minus(Duration.ofHours(1))
+                    val keys = transactionsById.keys().toList()
+                    for (txnId in keys) {
+                        if (txnId.created.isBefore(createdTimeToClean)) {
+                            log.info { "[$txnId] Dispose stuck transaction" }
+                            try {
+                                dispose(txnId)
+                            } catch (e: Throwable) {
+                                log.error(e) { "[$txnId] Error while disposing of stuck transaction" }
+                            }
+                        }
+                    }
                 }
-                Thread.sleep(10000)
+                Thread.sleep(30000)
             }
         }
         Runtime.getRuntime().addShutdownHook(
