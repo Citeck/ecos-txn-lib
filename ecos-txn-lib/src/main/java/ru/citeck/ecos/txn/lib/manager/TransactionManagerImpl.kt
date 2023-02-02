@@ -234,57 +234,66 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
                 transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
                 val actionRes = action.invoke()
-                if (!readOnly) {
-                    actions[TxnActionType.BEFORE_COMMIT]?.forEach {
-                        log.info { "Execute action: ${transaction.getId()} id: ${it.getId()}" }
-                        executeAction(transaction, it.ref)
+                AuthContext.runAsSystem {
+                    if (!readOnly) {
+                        actions[TxnActionType.BEFORE_COMMIT]?.forEach {
+                            log.debug { "[${transaction.getId()}] Execute action with id: ${it.getId()}" }
+                            executeAction(transaction, it.ref)
+                        }
                     }
-                }
-                transaction.onePhaseCommit()
-                if (!readOnly) {
-                    actions[TxnActionType.AFTER_COMMIT]?.forEach { actionRefWithIdx ->
-                        doInNewTxn(false, level + 1) {
-                            try {
-                                executeAction(transaction, actionRefWithIdx.ref)
-                            } catch (mainError: Throwable) {
-                                log.error(mainError) { "After commit action execution error. Id: ${actionRefWithIdx.getId()}" }
+                    transaction.onePhaseCommit()
+                    if (!readOnly) {
+                        actions[TxnActionType.AFTER_COMMIT]?.forEach { actionRefWithIdx ->
+                            doInNewTxn(false, level + 1) {
+                                try {
+                                    executeAction(transaction, actionRefWithIdx.ref)
+                                } catch (mainError: Throwable) {
+                                    log.error(mainError) { "After commit action execution error. Id: ${actionRefWithIdx.getId()}" }
+                                }
                             }
                         }
                     }
-                }
-                transaction.dispose()
-                actionRes
-            } catch (mainError: Throwable) {
-                try {
-                    transaction.rollback().forEach {
-                        mainError.addSuppressed(it)
-                    }
-                } catch (rollbackError: Throwable) {
-                    mainError.addSuppressed(rollbackError)
-                }
-                if (!readOnly) {
-                    actions[TxnActionType.AFTER_ROLLBACK]?.forEach { actionRefWithIdx ->
-                        doInNewTxn(false, level + 1) {
-                            try {
-                                executeAction(transaction, actionRefWithIdx.ref)
-                            } catch (afterRollbackActionErr: Throwable) {
-                                mainError.addSuppressed(
-                                    RuntimeException(
-                                        "After rollback action execution error. " +
-                                            "TxnId: ${transaction.getId()} Id: ${actionRefWithIdx.getId()}",
-                                        afterRollbackActionErr
-                                    )
-                                )
-                            }
-                        }
-                    }
-                }
-                try {
                     transaction.dispose()
-                } catch (disposeErr: Throwable) {
-                    mainError.addSuppressed(RuntimeException("Error while disposing of ${transaction.getId()}", disposeErr))
+                    actionRes
                 }
-                throw mainError
+            } catch (mainError: Throwable) {
+                AuthContext.runAsSystem {
+                    try {
+                        transaction.rollback().forEach {
+                            mainError.addSuppressed(it)
+                        }
+                    } catch (rollbackError: Throwable) {
+                        mainError.addSuppressed(rollbackError)
+                    }
+                    if (!readOnly) {
+                        actions[TxnActionType.AFTER_ROLLBACK]?.forEach { actionRefWithIdx ->
+                            doInNewTxn(false, level + 1) {
+                                try {
+                                    executeAction(transaction, actionRefWithIdx.ref)
+                                } catch (afterRollbackActionErr: Throwable) {
+                                    mainError.addSuppressed(
+                                        RuntimeException(
+                                            "After rollback action execution error. " +
+                                                "TxnId: ${transaction.getId()} Id: ${actionRefWithIdx.getId()}",
+                                            afterRollbackActionErr
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    try {
+                        transaction.dispose()
+                    } catch (disposeErr: Throwable) {
+                        mainError.addSuppressed(
+                            RuntimeException(
+                                "Error while disposing of ${transaction.getId()}",
+                                disposeErr
+                            )
+                        )
+                    }
+                    throw mainError
+                }
             } finally {
                 transactionsById.remove(newTxnId)
             }
