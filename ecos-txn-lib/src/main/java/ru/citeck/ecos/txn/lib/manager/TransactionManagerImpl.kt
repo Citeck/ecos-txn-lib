@@ -375,6 +375,10 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
         return transactionsById[txnId]?.transaction ?: error("Transaction is not found: '$txnId'")
     }
 
+    override fun getTransaction(txnId: TxnId): Transaction? {
+        return transactionsById[txnId]?.transaction
+    }
+
     override fun dispose(txnId: TxnId) {
         transactionsById.remove(txnId)?.transaction?.dispose()
     }

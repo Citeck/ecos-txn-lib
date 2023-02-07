@@ -18,6 +18,8 @@ interface TransactionManager {
         action: () -> T
     ): T
 
+    fun getTransaction(txnId: TxnId): Transaction?
+
     fun executeAction(txnId: TxnId, actionId: Int)
 
     fun prepareCommit(txnId: TxnId): CommitPrepareStatus
