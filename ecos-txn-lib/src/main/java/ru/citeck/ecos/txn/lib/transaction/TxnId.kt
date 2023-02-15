@@ -7,6 +7,7 @@ import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 
 class TxnId private constructor(
+    val version: Int,
     /**
      * Time when transaction was created
      */
@@ -21,8 +22,10 @@ class TxnId private constructor(
 
     companion object {
 
+        private const val CURRENT_VERSION = 0
+
         @JvmField
-        val EMPTY = TxnId(Instant.EPOCH, "", "", 0L)
+        val EMPTY = TxnId(CURRENT_VERSION, Instant.EPOCH, "", "", 0L)
 
         private const val ID_PARTS_DELIM = ":"
         private val NAME_ESCAPER = NameUtils.getEscaperWithAllowedChars("-.")
@@ -37,14 +40,18 @@ class TxnId private constructor(
                 return EMPTY
             }
             val parts = NAME_ESCAPER.unescape(text).split(ID_PARTS_DELIM)
-            if (parts.size != 4) {
+            if (parts.size != 5) {
                 error("Invalid txn id: '$text'")
             }
+            if (parts[0] != "0") {
+                error("Unsupported txnId version: ${parts[0]}")
+            }
             return TxnId(
-                Instant.ofEpochMilli(parts[0].toLong(NUM_TO_STR_RADIX)),
-                parts[1],
+                parts[0].toInt(NUM_TO_STR_RADIX),
+                Instant.ofEpochMilli(parts[1].toLong(NUM_TO_STR_RADIX)),
                 parts[2],
-                parts[3].toLong(NUM_TO_STR_RADIX)
+                parts[3],
+                parts[4].toLong(NUM_TO_STR_RADIX)
             )
         }
 
@@ -55,7 +62,7 @@ class TxnId private constructor(
 
         @JvmStatic
         fun create(appName: String, appInstanceId: String, created: Instant): TxnId {
-            return TxnId(created, appName, appInstanceId, idCounter.getAndIncrement())
+            return TxnId(CURRENT_VERSION, created, appName, appInstanceId, idCounter.getAndIncrement())
         }
     }
 
@@ -64,7 +71,8 @@ class TxnId private constructor(
         if (appName.isEmpty()) {
             return ""
         }
-        return created.toEpochMilli().toString(NUM_TO_STR_RADIX) +
+        return version.toString(NUM_TO_STR_RADIX) +
+            ID_PARTS_DELIM + created.toEpochMilli().toString(NUM_TO_STR_RADIX) +
             ID_PARTS_DELIM + NAME_ESCAPER.escape(appName) +
             ID_PARTS_DELIM + NAME_ESCAPER.escape(appInstanceId) +
             ID_PARTS_DELIM + index.toString(NUM_TO_STR_RADIX)
@@ -88,13 +96,16 @@ class TxnId private constructor(
 
         other as TxnId
 
+        if (version != other.version) {
+            return false
+        }
         if (appName != other.appName) {
             return false
         }
         if (appInstanceId != other.appInstanceId) {
             return false
         }
-        if (created != other.created) {
+        if (created.toEpochMilli() != other.created.toEpochMilli()) {
             return false
         }
         if (index != other.index) {
@@ -104,7 +115,8 @@ class TxnId private constructor(
     }
 
     override fun hashCode(): Int {
-        var result = appName.hashCode()
+        var result = version.hashCode()
+        result = 31 * result + appName.hashCode()
         result = 31 * result + appInstanceId.hashCode()
         result = 31 * result + created.hashCode()
         result = 31 * result + index.hashCode()

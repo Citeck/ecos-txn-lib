@@ -4,6 +4,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import ru.citeck.ecos.commons.json.Json
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import java.time.Instant
 
 class TxnIdTest {
 
@@ -36,5 +37,19 @@ class TxnIdTest {
         for (i in 0..36) {
             println(i.toString(36) + " - " + i.toString(36)[0].code)
         }
+    }
+
+    @Test
+    fun test3() {
+        val txnId = TxnId.create(
+            "abc",
+            "def",
+            Instant.ofEpochSecond(1234, 1234)
+        )
+        val idFromStr = TxnId.valueOf(txnId.toString())
+        assertThat(idFromStr.toString()).isEqualTo(txnId.toString())
+        assertThat(idFromStr).isEqualTo(txnId)
+
+        println(txnId)
     }
 }
