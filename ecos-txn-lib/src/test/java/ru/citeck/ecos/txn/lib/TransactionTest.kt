@@ -3,7 +3,7 @@ package ru.citeck.ecos.txn.lib
 import mu.KotlinLogging
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
-import ru.citeck.ecos.commons.test.EcosWebAppApiMock
+import ru.citeck.ecos.test.commons.EcosWebAppApiMock
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
