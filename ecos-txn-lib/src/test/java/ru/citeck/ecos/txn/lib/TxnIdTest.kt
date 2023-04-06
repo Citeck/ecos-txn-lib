@@ -48,6 +48,7 @@ class TxnIdTest {
         )
         val idFromStr = TxnId.valueOf(txnId.toString())
         assertThat(idFromStr.toString()).isEqualTo(txnId.toString())
+        assertThat(idFromStr.hashCode()).isEqualTo(txnId.hashCode())
         assertThat(idFromStr).isEqualTo(txnId)
 
         println(txnId)

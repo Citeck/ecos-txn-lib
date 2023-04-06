@@ -118,7 +118,7 @@ class TxnId private constructor(
         var result = version.hashCode()
         result = 31 * result + appName.hashCode()
         result = 31 * result + appInstanceId.hashCode()
-        result = 31 * result + created.hashCode()
+        result = 31 * result + created.toEpochMilli().hashCode()
         result = 31 * result + index.hashCode()
         return result
     }
