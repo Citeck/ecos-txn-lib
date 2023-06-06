@@ -19,7 +19,8 @@ class TransactionTest {
 
         val appApiMock = EcosWebAppApiMock()
 
-        val txnManager = TransactionManagerImpl(appApiMock)
+        val txnManager = TransactionManagerImpl()
+        txnManager.init(appApiMock)
         TxnContext.setManager(txnManager)
 
         val res0 = CustomRes("res-0")

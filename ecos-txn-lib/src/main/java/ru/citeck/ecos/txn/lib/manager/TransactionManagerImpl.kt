@@ -9,13 +9,17 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.*
 import ru.citeck.ecos.webapp.api.EcosWebAppApi
+import ru.citeck.ecos.webapp.api.apps.EcosRemoteWebAppsApi
+import ru.citeck.ecos.webapp.api.properties.EcosWebAppProps
+import ru.citeck.ecos.webapp.api.task.executor.EcosTaskExecutorApi
+import ru.citeck.ecos.webapp.api.web.client.EcosWebClientApi
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
-class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
+class TransactionManagerImpl : TransactionManager {
 
     companion object {
         private val log = KotlinLogging.logger {}
@@ -24,15 +28,21 @@ class TransactionManagerImpl(webAppApi: EcosWebAppApi) : TransactionManager {
         private const val MAX_NON_ALIVE_TIME_MS = 60_000
     }
 
-    private val webAppProps = webAppApi.getProperties()
-    private val txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
-    private val webClientApi = webAppApi.getWebClientApi()
-    private val remoteWebAppsApi = webAppApi.getRemoteWebAppsApi()
+    private lateinit var webAppProps: EcosWebAppProps
+    private lateinit var txnActionsExecutor: EcosTaskExecutorApi
+    private lateinit var webClientApi: EcosWebClientApi
+    private lateinit var remoteWebAppsApi: EcosRemoteWebAppsApi
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
     private val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
 
-    init {
+    fun init(webAppApi: EcosWebAppApi) {
+
+        webAppProps = webAppApi.getProperties()
+        txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
+        webClientApi = webAppApi.getWebClientApi()
+        remoteWebAppsApi = webAppApi.getRemoteWebAppsApi()
+
         val watcherThreadActive = AtomicBoolean(true)
         thread(start = true, name = "active-transactions-watcher") {
             while (watcherThreadActive.get()) {
