@@ -4,6 +4,7 @@ import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.TransactionManager
 import ru.citeck.ecos.txn.lib.manager.TransactionPolicy
 import ru.citeck.ecos.txn.lib.transaction.Transaction
+import ru.citeck.ecos.webapp.api.func.UncheckedConsumer
 import ru.citeck.ecos.webapp.api.func.UncheckedRunnable
 import ru.citeck.ecos.webapp.api.func.UncheckedSupplier
 import ru.citeck.ecos.webapp.api.func.asKtFunc
@@ -71,6 +72,7 @@ object TxnContext {
         txn.addAction(TxnActionType.BEFORE_COMMIT, order, false, action)
     }
 
+    @JvmStatic
     fun doBeforeCommitJ(order: Float, action: UncheckedRunnable) {
         doBeforeCommit(order, action.asKtFunc())
     }
@@ -80,6 +82,7 @@ object TxnContext {
         txn.addAction(TxnActionType.AFTER_COMMIT, order, async, action)
     }
 
+    @JvmStatic
     fun doAfterCommitJ(order: Float, async: Boolean, action: UncheckedRunnable) {
         doAfterCommit(order, async, action.asKtFunc())
     }
@@ -89,20 +92,41 @@ object TxnContext {
         txn.addAction(TxnActionType.AFTER_ROLLBACK, order, async, action)
     }
 
+    @JvmStatic
     fun doAfterRollbackJ(order: Float, async: Boolean, action: UncheckedRunnable) {
         doAfterRollback(order, async, action.asKtFunc())
+    }
+
+    @JvmStatic
+    fun <T> processSetAfterCommitJ(key: Any, element: T, action: UncheckedConsumer<Set<T>>) {
+        processSetAfterCommit(key, element, action.asKtFunc())
     }
 
     fun <T> processSetAfterCommit(key: Any, element: T, action: (Set<T>) -> Unit) {
         processSet(key, TxnActionType.AFTER_COMMIT, element, action)
     }
 
+    @JvmStatic
+    fun <T> processListAfterCommitJ(key: Any, element: T, action: UncheckedConsumer<List<T>>) {
+        processListAfterCommit(key, element, action.asKtFunc())
+    }
+
     fun <T> processListAfterCommit(key: Any, element: T, action: (List<T>) -> Unit) {
         processList(key, TxnActionType.AFTER_COMMIT, element, action)
     }
 
+    @JvmStatic
+    fun <T> processSetBeforeCommitJ(key: Any, element: T, action: UncheckedConsumer<Set<T>>) {
+        processSetBeforeCommit(key, element, action.asKtFunc())
+    }
+
     fun <T> processSetBeforeCommit(key: Any, element: T, action: (Set<T>) -> Unit) {
         processSet(key, TxnActionType.BEFORE_COMMIT, element, action)
+    }
+
+    @JvmStatic
+    fun <T> processListBeforeCommitJ(key: Any, element: T, action: UncheckedConsumer<List<T>>) {
+        processListBeforeCommit(key, element, action.asKtFunc())
     }
 
     fun <T> processListBeforeCommit(key: Any, element: T, action: (List<T>) -> Unit) {
