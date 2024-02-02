@@ -1,7 +1,11 @@
 package ru.citeck.ecos.txn.lib.manager
 
+import io.micrometer.observation.Observation
+import io.micrometer.observation.ObservationRegistry
 import mu.KotlinLogging
 import ru.citeck.ecos.context.lib.auth.AuthContext
+import ru.citeck.ecos.micrometer.EcosMicrometerContext
+import ru.citeck.ecos.micrometer.observeKt
 import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.api.TxnManagerWebExecutor
@@ -18,7 +22,6 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
-import kotlin.system.measureTimeMillis
 
 class TransactionManagerImpl : TransactionManager {
 
@@ -33,16 +36,20 @@ class TransactionManagerImpl : TransactionManager {
     private lateinit var txnActionsExecutor: EcosTaskExecutorApi
     private lateinit var webClientApi: EcosWebClientApi
     private lateinit var remoteWebAppsApi: EcosRemoteWebAppsApi
+    private lateinit var observationRegistry: ObservationRegistry
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
     private val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
 
-    fun init(webAppApi: EcosWebAppApi) {
+    @JvmOverloads
+    fun init(webAppApi: EcosWebAppApi, micrometerContext: EcosMicrometerContext = EcosMicrometerContext.NOOP) {
 
         webAppProps = webAppApi.getProperties()
         txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
         webClientApi = webAppApi.getWebClientApi()
         remoteWebAppsApi = webAppApi.getRemoteWebAppsApi()
+
+        observationRegistry = micrometerContext.getObservationRegistry()
 
         val watcherThreadActive = AtomicBoolean(true)
         thread(start = true, name = "active-transactions-watcher") {
@@ -225,141 +232,110 @@ class TransactionManagerImpl : TransactionManager {
     private fun <T> doInNewTxn(readOnly: Boolean, level: Int, action: () -> T): T {
         log.debug { "Do in new txn called. ReadOnly: $readOnly level: $level" }
 
-        val result: T
-        val totalTime = measureTimeMillis {
-            if (level >= 10) {
-                error("Transaction actions level overflow error")
+        val transactionStartTime = System.currentTimeMillis()
+
+        if (level >= 10) {
+            error("Transaction actions level overflow error")
+        }
+        val newTxnId = TxnId.create(webAppProps.appName, webAppProps.appInstanceId)
+        val actions: MutableMap<TxnActionType, TreeSet<TxnActionRefWithIdx>> = EnumMap(TxnActionType::class.java)
+        val index = AtomicInteger(0)
+        val txnManagerContext = object : TxnManagerContext {
+            override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {
+                log.info { "Register new action: $type $actionRef" }
+                actions.computeIfAbsent(type) { TreeSet() }.add(
+                    TxnActionRefWithIdx(actionRef, index.getAndIncrement())
+                )
             }
-            val newTxnId = TxnId.create(webAppProps.appName, webAppProps.appInstanceId)
-            val actions: MutableMap<TxnActionType, TreeSet<TxnActionRefWithIdx>> = EnumMap(TxnActionType::class.java)
-            val index = AtomicInteger(0)
-            val txnManagerContext = object : TxnManagerContext {
-                override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {
-                    log.info { "Register new action: $type $actionRef" }
-                    actions.computeIfAbsent(type) { TreeSet() }.add(
-                        TxnActionRefWithIdx(actionRef, index.getAndIncrement())
-                    )
-                }
 
-                override fun addResource(resource: TransactionResource): Boolean {
-                    return false
-                }
+            override fun addResource(resource: TransactionResource): Boolean {
+                return false
             }
-            val transaction = TransactionImpl(newTxnId, webAppProps.appName)
+        }
+        val transaction = TransactionImpl(newTxnId, webAppProps.appName)
 
-            result = doWithinTxn(transaction, readOnly, txnManagerContext) {
-                try {
-                    transactionsById[newTxnId] = TransactionInfo(transaction)
-                    transaction.start()
-                    val actionRes = action.invoke()
-                    AuthContext.runAsSystem {
-                        if (!readOnly) {
-                            val beforeCommitTime = measureTimeMillis {
-                                actions[TxnActionType.BEFORE_COMMIT]?.forEach { actionRefWithIdx ->
-                                    val executedTime = measureTimeMillis {
-                                        log.debug {
-                                            "[${transaction.getId()}] Execute action ${TxnActionType.BEFORE_COMMIT} " +
-                                                "with id: ${actionRefWithIdx.getId()}"
-                                        }
-                                        executeAction(transaction, actionRefWithIdx.ref)
-                                    }
-                                    log.debug {
-                                        "[${transaction.getId()}] Action ${TxnActionType.BEFORE_COMMIT} " +
-                                            "with id: ${actionRefWithIdx.getId()}, " +
-                                            "idx: ${actionRefWithIdx.index}, " +
-                                            "ref: ${actionRefWithIdx.ref} executed in $executedTime ms"
-                                    }
-                                }
-                            }
+        val result = doWithinTxn(transaction, readOnly, txnManagerContext) {
+            try {
+                transactionsById[newTxnId] = TransactionInfo(transaction)
+                transaction.start()
 
-                            log.debug {
-                                "[${transaction.getId()}] Actions ${TxnActionType.BEFORE_COMMIT} " +
-                                    "total time: $beforeCommitTime ms"
-                            }
+                val observation = Observation.createNotStarted("ecos.txn.action", observationRegistry)
+                    .highCardinalityKeyValue("txnId", newTxnId.toString())
+
+                val actionRes = observation.observeKt { action.invoke() }
+
+                AuthContext.runAsSystem {
+                    if (!readOnly) {
+                        executeActions(TxnActionType.BEFORE_COMMIT, transaction, actions) {
+                            executeAction(TxnActionType.BEFORE_COMMIT, transaction, it)
                         }
-                        transaction.onePhaseCommit()
-                        if (!readOnly) {
-                            val afterCommitTime = measureTimeMillis {
-                                actions[TxnActionType.AFTER_COMMIT]?.forEach { actionRefWithIdx ->
-                                    doInNewTxn(false, level + 1) {
-                                        try {
-                                            val executedTime = measureTimeMillis {
-                                                log.debug {
-                                                    "[${transaction.getId()}] Execute action ${TxnActionType.AFTER_COMMIT} " +
-                                                        "with id: ${actionRefWithIdx.getId()}"
-                                                }
-                                                executeAction(transaction, actionRefWithIdx.ref)
-                                            }
-                                            log.debug {
-                                                "[${transaction.getId()}] Action ${TxnActionType.AFTER_COMMIT} " +
-                                                    "with id: ${actionRefWithIdx.getId()}, " +
-                                                    "idx: ${actionRefWithIdx.index}, " +
-                                                    "ref: ${actionRefWithIdx.ref} executed in $executedTime ms"
-                                            }
-                                        } catch (mainError: Throwable) {
-                                            log.error(mainError) { "After commit action execution error. Id: ${actionRefWithIdx.getId()}" }
-                                        }
-                                    }
-                                }
-                            }
-
-                            log.debug {
-                                "[${transaction.getId()}] Actions ${TxnActionType.AFTER_COMMIT} " +
-                                    "total time: $afterCommitTime ms"
-                            }
-                        }
-                        transaction.dispose()
-                        actionRes
                     }
-                } catch (mainError: Throwable) {
-                    AuthContext.runAsSystem {
-                        val catchTime = measureTimeMillis {
-                            try {
-                                transaction.rollback().forEach {
-                                    mainError.addSuppressed(it)
-                                }
-                            } catch (rollbackError: Throwable) {
-                                mainError.addSuppressed(rollbackError)
-                            }
-                            if (!readOnly) {
-                                actions[TxnActionType.AFTER_ROLLBACK]?.forEach { actionRefWithIdx ->
-                                    doInNewTxn(false, level + 1) {
-                                        try {
-                                            executeAction(transaction, actionRefWithIdx.ref)
-                                        } catch (afterRollbackActionErr: Throwable) {
-                                            mainError.addSuppressed(
-                                                RuntimeException(
-                                                    "After rollback action execution error. " +
-                                                        "TxnId: ${transaction.getId()} Id: ${actionRefWithIdx.getId()}",
-                                                    afterRollbackActionErr
-                                                )
-                                            )
-                                        }
+                    transaction.onePhaseCommit()
+                    if (!readOnly) {
+                        executeActions(TxnActionType.AFTER_COMMIT, transaction, actions) { ref ->
+                            doInNewTxn(false, level + 1) {
+                                try {
+                                    executeAction(TxnActionType.AFTER_COMMIT, transaction, ref)
+                                } catch (mainError: Throwable) {
+                                    log.error(mainError) {
+                                        "After commit action execution error. Id: ${ref.getGlobalId()}"
                                     }
                                 }
                             }
-                            try {
-                                transaction.dispose()
-                            } catch (disposeErr: Throwable) {
-                                mainError.addSuppressed(
-                                    RuntimeException(
-                                        "Error while disposing of ${transaction.getId()}",
-                                        disposeErr
+                        }
+                    }
+                    transaction.dispose()
+                    actionRes
+                }
+            } catch (mainError: Throwable) {
+                AuthContext.runAsSystem {
+                    val catchStartTime = System.currentTimeMillis()
+                    try {
+                        transaction.rollback().forEach {
+                            mainError.addSuppressed(it)
+                        }
+                    } catch (rollbackError: Throwable) {
+                        mainError.addSuppressed(rollbackError)
+                    }
+                    if (!readOnly) {
+
+                        executeActions(TxnActionType.AFTER_ROLLBACK, transaction, actions) { ref ->
+
+                            doInNewTxn(false, level + 1) {
+                                try {
+                                    executeAction(TxnActionType.AFTER_ROLLBACK, transaction, ref)
+                                } catch (afterRollbackActionErr: Throwable) {
+                                    mainError.addSuppressed(
+                                        RuntimeException(
+                                            "[${transaction.getId()}] After rollback action execution error. " +
+                                                "Id: ${ref.getGlobalId()}",
+                                            afterRollbackActionErr
+                                        )
                                     )
-                                )
+                                }
                             }
                         }
-
-                        log.debug { "Catch block executed in $catchTime ms" }
-                        throw mainError
                     }
-                } finally {
-                    transactionsById.remove(newTxnId)
+                    try {
+                        transaction.dispose()
+                    } catch (disposeErr: Throwable) {
+                        mainError.addSuppressed(
+                            RuntimeException("Error while disposing of ${transaction.getId()}", disposeErr)
+                        )
+                    }
+
+                    val catchTime = System.currentTimeMillis() - catchStartTime
+                    debug(transaction) { "Catch block executed in $catchTime ms" }
+
+                    throw mainError
                 }
+            } finally {
+                transactionsById.remove(newTxnId)
             }
         }
 
-        log.debug { "Do in new txn finished. ReadOnly: $readOnly level: $level. Total time: $totalTime ms" }
+        val totalTime = System.currentTimeMillis() - transactionStartTime
+        debug(transaction) { "Do in new txn finished. ReadOnly: $readOnly level: $level. Total time: $totalTime ms" }
 
         return result
     }
@@ -399,7 +375,38 @@ class TransactionManagerImpl : TransactionManager {
         getRequiredExtTxn(txnId).executeAction(actionId)
     }
 
-    private fun executeAction(transaction: Transaction, actionRef: TxnActionRef) {
+    private inline fun executeActions(
+        type: TxnActionType,
+        transaction: Transaction,
+        actions: Map<TxnActionType, Set<TxnActionRefWithIdx>>,
+        crossinline handler: (TxnActionRef) -> Unit
+    ) {
+
+        val startTime = System.currentTimeMillis()
+
+        val observation = if (!observationRegistry.isNoop) {
+            val lowerType = type.name.lowercase().replace("_", "-")
+            Observation.createNotStarted("ecos.txn.actions.$lowerType", observationRegistry)
+                .highCardinalityKeyValue("txnId", transaction.getId().toString())
+        } else {
+            Observation.NOOP
+        }
+
+        observation.observeKt {
+            actions[type]?.forEach { handler.invoke(it.ref) }
+        }
+
+        val totalTime = System.currentTimeMillis() - startTime
+
+        debug(transaction) { "Actions $type total time: $totalTime ms" }
+    }
+
+    private fun executeAction(type: TxnActionType, transaction: Transaction, actionRef: TxnActionRef) {
+
+        debug(transaction) { "Execute $type action with id: ${actionRef.getGlobalId()}" }
+
+        val actionStartTime = System.currentTimeMillis()
+
         if (actionRef.appName == webAppProps.appName) {
             transaction.executeAction(actionRef.id)
         } else {
@@ -413,6 +420,13 @@ class TransactionManagerImpl : TransactionManager {
                     .execute {}.get()
             }
         }
+
+        val executedTime = System.currentTimeMillis() - actionStartTime
+        debug(transaction) { "Action $type with id: ${actionRef.getGlobalId()}, executed in $executedTime ms" }
+    }
+
+    private inline fun debug(transaction: Transaction, crossinline message: () -> String) {
+        log.debug { "[${transaction.getId()}] " + message() }
     }
 
     override fun prepareCommit(txnId: TxnId): CommitPrepareStatus {
