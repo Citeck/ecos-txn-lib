@@ -66,16 +66,21 @@ class TxnId private constructor(
         }
     }
 
+    private var strValue: String? = null
+
     @JsonValue
     override fun toString(): String {
         if (appName.isEmpty()) {
             return ""
         }
-        return version.toString(NUM_TO_STR_RADIX) +
+        strValue?.let { return it }
+        val newStrVal = version.toString(NUM_TO_STR_RADIX) +
             ID_PARTS_DELIM + created.toEpochMilli().toString(NUM_TO_STR_RADIX) +
             ID_PARTS_DELIM + NAME_ESCAPER.escape(appName) +
             ID_PARTS_DELIM + NAME_ESCAPER.escape(appInstanceId) +
             ID_PARTS_DELIM + index.toString(NUM_TO_STR_RADIX)
+        strValue = newStrVal
+        return newStrVal
     }
 
     fun isEmpty(): Boolean {

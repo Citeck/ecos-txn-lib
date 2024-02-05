@@ -10,6 +10,8 @@ interface ManagedTransaction : Transaction {
 
     fun <T> doWithinTxn(readOnly: Boolean, action: () -> T): T
 
+    fun getResourcesNames(): List<String>
+
     fun prepareCommit(): CommitPrepareStatus
 
     fun commitPrepared()

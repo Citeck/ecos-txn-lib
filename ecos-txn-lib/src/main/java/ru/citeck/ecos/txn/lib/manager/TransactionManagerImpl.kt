@@ -259,10 +259,10 @@ class TransactionManagerImpl : TransactionManager {
                 transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
 
-                val observation = Observation.createNotStarted("ecos.txn.action", observationRegistry)
+                val txnActionObservation = Observation.createNotStarted("ecos.txn.action", observationRegistry)
                     .highCardinalityKeyValue("txnId", newTxnId.toString())
 
-                val actionRes = observation.observeKt { action.invoke() }
+                val actionRes = txnActionObservation.observeKt { action.invoke() }
 
                 AuthContext.runAsSystem {
                     if (!readOnly) {
@@ -270,7 +270,18 @@ class TransactionManagerImpl : TransactionManager {
                             executeAction(TxnActionType.BEFORE_COMMIT, transaction, it)
                         }
                     }
-                    transaction.onePhaseCommit()
+                    val commitObservation = if (observationRegistry.isNoop) {
+                        Observation.NOOP
+                    } else {
+                        Observation.createNotStarted(
+                            "ecos.txn.commit",
+                            observationRegistry
+                        ).highCardinalityKeyValue("txnId", newTxnId.toString())
+                            .highCardinalityKeyValue("resources", transaction.getResourcesNames().toString())
+                    }
+
+                    commitObservation.observeKt { transaction.onePhaseCommit() }
+
                     if (!readOnly) {
                         executeActions(TxnActionType.AFTER_COMMIT, transaction, actions) { ref ->
                             doInNewTxn(false, level + 1) {
@@ -289,9 +300,17 @@ class TransactionManagerImpl : TransactionManager {
                 }
             } catch (mainError: Throwable) {
                 AuthContext.runAsSystem {
+
                     val catchStartTime = System.currentTimeMillis()
+
+                    val rollbackObservation = Observation.createNotStarted(
+                        "ecos.txn.rollback",
+                        observationRegistry
+                    ).highCardinalityKeyValue("txnId", newTxnId.toString())
                     try {
-                        transaction.rollback().forEach {
+                        rollbackObservation.observeKt {
+                            transaction.rollback()
+                        }.forEach {
                             mainError.addSuppressed(it)
                         }
                     } catch (rollbackError: Throwable) {

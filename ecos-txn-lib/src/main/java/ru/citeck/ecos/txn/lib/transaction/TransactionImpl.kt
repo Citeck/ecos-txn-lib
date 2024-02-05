@@ -7,7 +7,6 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import java.lang.RuntimeException
 import java.time.Instant
-import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -48,6 +47,10 @@ class TransactionImpl(
         debug { "txn start" }
         checkStatus(TransactionStatus.NEW)
         setStatus(TransactionStatus.ACTIVE)
+    }
+
+    override fun getResourcesNames(): List<String> {
+        return resources.map { it.name }
     }
 
     override fun <K : Any, T : TransactionResource> getOrAddRes(key: K, resource: (K, TxnId) -> T): T {
