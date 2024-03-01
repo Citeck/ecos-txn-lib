@@ -4,9 +4,12 @@ import mu.KotlinLogging
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import ru.citeck.ecos.test.commons.EcosWebAppApiMock
+import ru.citeck.ecos.txn.lib.manager.EcosTxnProps
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
+import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 
 class TransactionTest {
 
@@ -20,11 +23,12 @@ class TransactionTest {
         val appApiMock = EcosWebAppApiMock()
 
         val txnManager = TransactionManagerImpl()
-        txnManager.init(appApiMock)
+        txnManager.init(appApiMock, EcosTxnProps())
         TxnContext.setManager(txnManager)
 
-        val res0 = CustomRes("res-0")
-        val res1 = CustomRes("res-1")
+        val txnId = TxnId.create("test", "")
+        val res0 = CustomRes("res-0", txnId)
+        val res1 = CustomRes("res-1", txnId)
 
         TxnContext.doInTxn {
             TxnContext.getTxn().getOrAddRes(res0.getName()) { _, _ -> res0 }
@@ -35,7 +39,10 @@ class TransactionTest {
         assertThat(res1.status).isEqualTo(ResStatus.COMMITTED)
     }
 
-    class CustomRes(private val name: String) : TransactionResource {
+    class CustomRes(
+        private val name: String,
+        private val txnId: TxnId
+    ) : TransactionResource {
 
         var status: ResStatus = ResStatus.IDLE
 
@@ -49,6 +56,10 @@ class TransactionTest {
 
         override fun getName(): String {
             return name
+        }
+
+        override fun getXid(): EcosXid {
+            return EcosXid.create(txnId, "aaa", "bbb")
         }
 
         override fun prepareCommit(): CommitPrepareStatus {

@@ -4,6 +4,7 @@ import mu.KotlinLogging
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import javax.transaction.xa.XAResource
 
 class JavaXaTxnResourceAdapter(
@@ -18,7 +19,11 @@ class JavaXaTxnResourceAdapter(
         private val log = KotlinLogging.logger {}
     }
 
-    private val xid = TxnXid(txnId, currentAppName, currentAppInstanceId)
+    private val xid = EcosXid.create(txnId, currentAppName, currentAppInstanceId)
+
+    override fun getXid(): EcosXid {
+        return xid
+    }
 
     override fun start() {
         resource.start(xid, XAResource.TMNOFLAGS)

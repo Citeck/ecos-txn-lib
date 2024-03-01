@@ -30,16 +30,6 @@ class TxnIdTest {
     }
 
     @Test
-    fun test2() {
-
-        println('a' < 'z')
-
-        for (i in 0..36) {
-            println(i.toString(36) + " - " + i.toString(36)[0].code)
-        }
-    }
-
-    @Test
     fun test3() {
         val txnId = TxnId.create(
             "abc",

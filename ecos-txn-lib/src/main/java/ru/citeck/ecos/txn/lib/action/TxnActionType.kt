@@ -1,7 +1,7 @@
 package ru.citeck.ecos.txn.lib.action
 
-enum class TxnActionType {
-    BEFORE_COMMIT,
-    AFTER_COMMIT,
-    AFTER_ROLLBACK
+enum class TxnActionType(val observationId: String) {
+    BEFORE_COMMIT("before-commit"),
+    AFTER_COMMIT("after-commit"),
+    AFTER_ROLLBACK("after-rollback")
 }

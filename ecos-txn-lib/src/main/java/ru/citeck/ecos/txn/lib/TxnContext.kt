@@ -69,7 +69,7 @@ object TxnContext {
 
     fun doBeforeCommit(order: Float, action: () -> Unit) {
         val txn = getTxnOrNull() ?: return action.invoke()
-        txn.addAction(TxnActionType.BEFORE_COMMIT, order, false, action)
+        txn.addAction(TxnActionType.BEFORE_COMMIT, order, action)
     }
 
     @JvmStatic
@@ -79,7 +79,7 @@ object TxnContext {
 
     fun doAfterCommit(order: Float, async: Boolean, action: () -> Unit) {
         val txn = getTxnOrNull() ?: return action.invoke()
-        txn.addAction(TxnActionType.AFTER_COMMIT, order, async, action)
+        txn.addAction(TxnActionType.AFTER_COMMIT, order, action)
     }
 
     @JvmStatic
@@ -89,7 +89,7 @@ object TxnContext {
 
     fun doAfterRollback(order: Float, async: Boolean, action: () -> Unit) {
         val txn = getTxnOrNull() ?: return
-        txn.addAction(TxnActionType.AFTER_ROLLBACK, order, async, action)
+        txn.addAction(TxnActionType.AFTER_ROLLBACK, order, action)
     }
 
     @JvmStatic
@@ -134,11 +134,11 @@ object TxnContext {
     }
 
     private fun <T> processSet(key: Any, actionType: TxnActionType, element: T, action: (Set<T>) -> Unit) {
-        processCollection(key, actionType, element, 0f, false, { LinkedHashSet() }, action)
+        processCollection(key, actionType, element, 0f, { LinkedHashSet() }, action)
     }
 
     private fun <T> processList(key: Any, actionType: TxnActionType, element: T, action: (List<T>) -> Unit) {
-        processCollection(key, actionType, element, 0f, false, { ArrayList() }, action)
+        processCollection(key, actionType, element, 0f, { ArrayList() }, action)
     }
 
     private fun <T, C : MutableCollection<T>> processCollection(
@@ -146,7 +146,6 @@ object TxnContext {
         actionType: TxnActionType,
         element: T,
         order: Float,
-        async: Boolean,
         createNewCollection: () -> C,
         action: (C) -> Unit
     ) {
@@ -160,7 +159,7 @@ object TxnContext {
         }
         val collection = txn.getData(key) { createNewCollection() }
         if (collection.isEmpty()) {
-            txn.addAction(actionType, order, async) { action.invoke(collection) }
+            txn.addAction(actionType, order) { action.invoke(collection) }
         }
         collection.add(element)
     }

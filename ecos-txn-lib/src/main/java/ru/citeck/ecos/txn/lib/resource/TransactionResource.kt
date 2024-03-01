@@ -1,5 +1,7 @@
 package ru.citeck.ecos.txn.lib.resource
 
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
+
 interface TransactionResource {
 
     fun start()
@@ -13,6 +15,8 @@ interface TransactionResource {
     fun commitPrepared()
 
     fun onePhaseCommit()
+
+    fun getXid(): EcosXid
 
     fun rollback()
 

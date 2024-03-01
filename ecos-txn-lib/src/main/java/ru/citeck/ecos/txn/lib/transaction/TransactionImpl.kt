@@ -5,6 +5,9 @@ import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
+import ru.citeck.ecos.txn.lib.transaction.ctx.EmptyTxnManagerContext
+import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.lang.RuntimeException
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
@@ -16,7 +19,8 @@ import kotlin.collections.LinkedHashMap
 
 class TransactionImpl(
     private val txnId: TxnId,
-    private val appName: String
+    private val appName: String,
+    private val initialReadOnly: Boolean
 ) : ManagedTransaction {
 
     companion object {
@@ -30,11 +34,11 @@ class TransactionImpl(
 
     private val actionsById: MutableMap<Int, ActionData> = HashMap()
 
-    private var txnManagerContext: TxnManagerContext? = null
+    private var txnManagerContext: TxnManagerContext = EmptyTxnManagerContext
 
     private var txnStatus: TransactionStatus = TransactionStatus.NEW
 
-    private var readOnly = false
+    private var readOnly = initialReadOnly
 
     private val synchronizations = ArrayList<TransactionSynchronization>()
 
@@ -44,17 +48,29 @@ class TransactionImpl(
     private val lastActiveTime = AtomicReference(Instant.now())
 
     override fun start() {
-        debug { "txn start" }
+        logDebug { "txn start" }
         checkStatus(TransactionStatus.NEW)
         setStatus(TransactionStatus.ACTIVE)
+    }
+
+    override fun getResources(): List<TransactionResource> {
+        return resources.map { it.resource }
     }
 
     override fun getResourcesNames(): List<String> {
         return resources.map { it.name }
     }
 
+    override fun addRemoteXids(appName: String, xids: Set<EcosXid>) {
+        logDebug { "registerRemoteXids for app $appName xids: $xids" }
+        if (txnStatus != TransactionStatus.ACTIVE) {
+            error("[$txnId] Remote xids can't be added when transaction is not active. AppName: $appName xids: $xids")
+        }
+        txnManagerContext.addRemoteXids(appName, xids)
+    }
+
     override fun <K : Any, T : TransactionResource> getOrAddRes(key: K, resource: (K, TxnId) -> T): T {
-        debug { "getOrAddRes with key $key" }
+        logDebug { "getOrAddRes with key $key" }
         val currentResource = resourcesByKey[key]
         val resourceRes = if (currentResource != null) {
             currentResource.resource
@@ -62,14 +78,13 @@ class TransactionImpl(
             if (txnStatus != TransactionStatus.ACTIVE) {
                 error("[$txnId] Resource can't be added when transaction is not active. Key: $key")
             }
-            debug { "Create new resource for key $key" }
+            logDebug { "Create new resource for key $key" }
             val res = resource.invoke(key, txnId)
             res.start()
-            if (!txnManagerContext!!.addResource(res)) {
-                val data = ResourceData(res, res.getName())
-                resources.add(data)
-                resourcesByKey[key] = data
-            }
+            val data = ResourceData(res, res.getName())
+            resources.add(data)
+            resourcesByKey[key] = data
+            txnManagerContext.onResourceAdded(res)
             res
         }
         @Suppress("UNCHECKED_CAST")
@@ -77,7 +92,7 @@ class TransactionImpl(
     }
 
     override fun executeAction(actionId: Int) {
-        debug { "Execute action $actionId" }
+        logDebug { "Execute action $actionId" }
         val action = actionsById[actionId] ?: error("Action is not found by id $actionId")
         if (action.executed) {
             error("Action with id $actionId already executed")
@@ -122,20 +137,27 @@ class TransactionImpl(
     }
 
     override fun addAction(type: TxnActionType, action: TxnActionRef) {
-        debug { "Register action $type - $action" }
-        val context = this.txnManagerContext ?: error("doWithinTxnContext is null")
-        context.registerAction(type, action)
+        logDebug { "Register action $type - $action" }
+        txnManagerContext.registerAction(type, action)
     }
 
+    @Deprecated(
+        "use addAction without async flag",
+        replaceWith = ReplaceWith("this.addAction(type, order, action)")
+    )
     override fun addAction(type: TxnActionType, order: Float, async: Boolean, action: () -> Unit) {
+        addAction(type, order, action)
+    }
+
+    override fun addAction(type: TxnActionType, order: Float, action: () -> Unit) {
         checkStatus(TransactionStatus.ACTIVE)
         val actionId = actionCounter.getAndIncrement()
-        actionsById[actionId] = ActionData(async, action)
+        actionsById[actionId] = ActionData(action)
         addAction(type, TxnActionRef(appName, actionId, order))
     }
 
     override fun prepareCommit(): CommitPrepareStatus {
-        debug { "Prepare commit" }
+        logDebug { "Prepare commit" }
         checkStatus(TransactionStatus.ACTIVE)
         setStatus(TransactionStatus.PREPARING)
         var status = CommitPrepareStatus.NOTHING_TO_COMMIT
@@ -152,7 +174,7 @@ class TransactionImpl(
     }
 
     override fun commitPrepared() {
-        debug { "Commit prepared" }
+        logDebug { "Commit prepared" }
         checkStatus(TransactionStatus.PREPARED)
         setStatus(TransactionStatus.COMMITTING)
         for (resData in resources) {
@@ -163,7 +185,7 @@ class TransactionImpl(
     }
 
     override fun onePhaseCommit() {
-        debug { "One phase commit" }
+        logDebug { "One phase commit" }
         checkStatus(TransactionStatus.ACTIVE)
         setStatus(TransactionStatus.COMMITTING)
         if (resources.isNotEmpty()) {
@@ -189,8 +211,8 @@ class TransactionImpl(
         setStatus(TransactionStatus.COMMITTED)
     }
 
-    override fun rollback(): List<Throwable> {
-        debug { "Rollback" }
+    override fun rollback(cause: Throwable?) {
+        logDebug { "Rollback" }
         checkStatus(
             TransactionStatus.ACTIVE,
             TransactionStatus.PREPARING,
@@ -198,20 +220,23 @@ class TransactionImpl(
             TransactionStatus.COMMITTING
         )
         setStatus(TransactionStatus.ROLLING_BACK)
-        val errorsRes = mutableListOf<Throwable>()
+        // val errorsRes = mutableListOf<Throwable>()
         for (resData in resources) {
             if (!resData.committed) {
                 try {
                     resData.resource.rollback()
                 } catch (e: Throwable) {
-                    errorsRes.add(RuntimeException("Error while rollback. Resource: '${resData.name}'", e))
+                    if (cause == null) {
+                        throw e
+                    } else {
+                        cause.addSuppressed(RuntimeException("Error while rollback. Resource: '${resData.name}'", e))
+                    }
                 }
             } else {
-                log.error { "Resource already committed and can't be rolled back: '${resData.name}'" }
+                logError { "Resource already committed and can't be rolled back: '${resData.name}'" }
             }
         }
         setStatus(TransactionStatus.ROLLED_BACK)
-        return errorsRes
     }
 
     override fun registerSync(sync: TransactionSynchronization) {
@@ -249,29 +274,40 @@ class TransactionImpl(
             return
         }
         if (!isCompleted()) {
-            log.error("[$txnId] Uncompleted transaction disposing. Status: $txnStatus")
-            try {
-                rollback()
-            } catch (e: Throwable) {
-                log.debug(e) { "Exception while rollback in dispose method. Status: $txnStatus" }
+            if (readOnly) {
+                onePhaseCommit()
+            } else {
+                logError { "Uncompleted transaction disposing. Status: $txnStatus" }
+                val rollbackCause = RuntimeException("Uncompleted transaction disposing. TxnId: $txnId Status: $txnStatus")
+                rollback(rollbackCause)
+                if (rollbackCause.suppressed.isNotEmpty()) {
+                    logError(rollbackCause) { "Exceptions occurred while rollback of $txnId" }
+                }
             }
         }
         for (resData in resources) {
             try {
                 resData.resource.dispose()
             } catch (e: Throwable) {
-                log.error(e) { "Exception while disposing" }
+                logError(e) { "Exception while disposing resource '${resData.name}'" }
             }
         }
         setStatus(TransactionStatus.DISPOSED)
     }
 
-    private inline fun debug(crossinline msg: () -> String) {
-        log.debug { "[" + txnId + "] " + msg.invoke() }
+    private inline fun logDebug(crossinline msg: () -> String) {
+        if (!initialReadOnly) {
+            log.debug { "[" + txnId + "] " + msg.invoke() }
+        } else {
+            log.trace { "[" + txnId + "] " + msg.invoke() }
+        }
     }
 
-    private inline fun error(e: Throwable, crossinline msg: () -> String) {
+    private inline fun logError(e: Throwable, crossinline msg: () -> String) {
         log.error(e) { "[" + txnId + "] " + msg.invoke() }
+    }
+    private inline fun logError(crossinline msg: () -> String) {
+        log.error { "[" + txnId + "] " + msg.invoke() }
     }
 
     override fun getStatus(): TransactionStatus {
@@ -288,14 +324,14 @@ class TransactionImpl(
                 it.beforeCompletion()
             }
         }
-        debug { "Update status ${this.txnStatus} -> $newStatus" }
+        logDebug { "Update status ${this.txnStatus} -> $newStatus" }
         this.txnStatus = newStatus
         if (this.txnStatus == TransactionStatus.ROLLED_BACK || this.txnStatus == TransactionStatus.COMMITTED) {
             synchronizations.forEach {
                 try {
                     it.afterCompletion(this.txnStatus)
                 } catch (e: Throwable) {
-                    log.error(e) { "[$txnId] Exception in sync.afterCompletion call" }
+                    logError(e) { "Exception in sync.afterCompletion call" }
                 }
             }
         }
@@ -329,7 +365,6 @@ class TransactionImpl(
     }
 
     private class ActionData(
-        val async: Boolean,
         val action: () -> Unit,
         var executed: Boolean = false
     )

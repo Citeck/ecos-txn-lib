@@ -1,12 +1,17 @@
 package ru.citeck.ecos.txn.lib.manager
 
+import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManager
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
+import ru.citeck.ecos.txn.lib.transaction.ManagedTransaction
 import ru.citeck.ecos.txn.lib.transaction.Transaction
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
-import ru.citeck.ecos.txn.lib.transaction.TxnManagerContext
+import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 
 interface TransactionManager {
+
+    fun coordinateCommit(txnId: TxnId, data: TxnCommitData, txnLevel: Int)
 
     fun <T> doInTxn(policy: TransactionPolicy, readOnly: Boolean?, action: () -> T): T
 
@@ -18,21 +23,21 @@ interface TransactionManager {
         action: () -> T
     ): T
 
-    fun getTransaction(txnId: TxnId): Transaction?
+    fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): CommitPrepareStatus
 
-    fun executeAction(txnId: TxnId, actionId: Int)
+    fun getManagedTransactionOrNull(txnId: TxnId): ManagedTransaction?
 
-    fun prepareCommit(txnId: TxnId): CommitPrepareStatus
+    fun getManagedTransaction(txnId: TxnId): ManagedTransaction
 
-    fun commitPrepared(txnId: TxnId)
-
-    fun onePhaseCommit(txnId: TxnId)
-
-    fun rollback(txnId: TxnId)
-
-    fun getCurrentTransaction(): Transaction?
+    fun getTransactionOrNull(txnId: TxnId): Transaction?
 
     fun dispose(txnId: TxnId)
 
+    fun getCurrentTransaction(): Transaction?
+
     fun getStatus(txnId: TxnId): TransactionStatus
+
+    fun getRecoveryManager(): RecoveryManager
+
+    fun shutdown()
 }
