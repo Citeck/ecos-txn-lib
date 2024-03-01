@@ -54,7 +54,7 @@ class TransactionManagerImpl : TransactionManager {
     @JvmOverloads
     fun init(
         webAppApi: EcosWebAppApi,
-        props: EcosTxnProps,
+        props: EcosTxnProps = EcosTxnProps(),
         micrometerContext: EcosMicrometerContext = EcosMicrometerContext.NOOP,
         twoPhaseCommitRepo: TwoPhaseCommitRepo = NoopTwoPhaseCommitRepo
     ) {

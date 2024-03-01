@@ -73,6 +73,7 @@ class CommitCoordinatorImpl(
                         it.body { w -> w.writeDto(commitReqBody) }
                     }
                 ) {}
+                manager.dispose(txnId)
                 return
             }
         }
@@ -180,7 +181,9 @@ class CommitCoordinatorImpl(
     }
 
     override fun disposeRoot(txnId: TxnId, apps: Collection<String>, mainError: Throwable?) {
-        for (app in apps) {
+        val appsToDispose = LinkedHashSet<String>()
+        appsToDispose.add(currentApp)
+        for (app in appsToDispose) {
             try {
                 if (app == currentApp) {
                     manager.dispose(txnId)
