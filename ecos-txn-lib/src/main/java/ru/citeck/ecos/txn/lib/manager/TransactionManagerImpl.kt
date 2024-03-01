@@ -177,8 +177,7 @@ class TransactionManagerImpl : TransactionManager {
         val transaction = TransactionImpl(newTxnId, webAppProps.appName, readOnly)
 
         val actions = TxnActionsContainer(newTxnId, this)
-        val remoteXids = LinkedHashMap<String, MutableSet<EcosXid>>()
-        val localXids = LinkedHashSet<EcosXid>()
+        val xidsByApp = LinkedHashMap<String, MutableSet<EcosXid>>()
 
         val txnManagerContext = object : TxnManagerContext {
             override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {
@@ -186,17 +185,16 @@ class TransactionManagerImpl : TransactionManager {
             }
 
             override fun addRemoteXids(appName: String, xids: Set<EcosXid>) {
-                remoteXids.computeIfAbsent(appName) { LinkedHashSet() }.addAll(xids)
+                xidsByApp.computeIfAbsent(appName) { LinkedHashSet() }.addAll(xids)
             }
 
             override fun onResourceAdded(resource: TransactionResource) {
-                localXids.add(resource.getXid())
+                addRemoteXids(webAppProps.appName, setOf(resource.getXid()))
             }
         }
 
         val result = doWithinTxn(transaction, readOnly, txnManagerContext) {
 
-            var afterRollbackActions: List<TxnActionId> = emptyList()
             try {
                 transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
@@ -205,15 +203,11 @@ class TransactionManagerImpl : TransactionManager {
                     .highCardinalityKeyValue("txnId") { newTxnId.toString() }
 
                 val actionRes = txnActionObservation.observe { action.invoke() }
-                afterRollbackActions = actions.drainActions(TxnActionType.AFTER_ROLLBACK)
                 val afterCommitActions = actions.drainActions(TxnActionType.AFTER_COMMIT)
 
-                if (localXids.isNotEmpty()) {
-                    remoteXids[webAppProps.appName] = localXids
-                }
                 if (readOnly) {
                     AuthContext.runAsSystem {
-                        commitCoordinator.disposeRoot(newTxnId, remoteXids.keys, null)
+                        commitCoordinator.disposeRoot(newTxnId, xidsByApp.keys, null)
                     }
                     actionRes
                 } else {
@@ -223,10 +217,11 @@ class TransactionManagerImpl : TransactionManager {
                         if (afterCommitActions.isNotEmpty()) {
                             twopcActions[TxnActionType.AFTER_COMMIT] = afterCommitActions
                         }
+                        val afterRollbackActions = actions.getActions(TxnActionType.AFTER_ROLLBACK)
                         if (afterRollbackActions.isNotEmpty()) {
                             twopcActions[TxnActionType.AFTER_ROLLBACK] = afterRollbackActions
                         }
-                        val twopcCommitData = TxnCommitData(remoteXids, twopcActions)
+                        val twopcCommitData = TxnCommitData(xidsByApp, twopcActions)
                         commitCoordinator.commitRoot(newTxnId, twopcCommitData, txnLevel)
 
                         actionRes
@@ -235,9 +230,15 @@ class TransactionManagerImpl : TransactionManager {
             } catch (error: Throwable) {
                 AuthContext.runAsSystem {
                     if (readOnly) {
-                        commitCoordinator.disposeRoot(newTxnId, remoteXids.keys, error)
+                        commitCoordinator.disposeRoot(newTxnId, xidsByApp.keys, error)
                     } else {
-                        commitCoordinator.rollbackRoot(newTxnId, remoteXids.keys, afterRollbackActions, error, txnLevel)
+                        commitCoordinator.rollbackRoot(
+                            newTxnId,
+                            xidsByApp.keys,
+                            actions.getActions(TxnActionType.AFTER_ROLLBACK),
+                            error,
+                            txnLevel
+                        )
                     }
                 }
                 throw error

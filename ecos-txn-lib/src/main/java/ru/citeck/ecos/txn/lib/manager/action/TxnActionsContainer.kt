@@ -22,6 +22,10 @@ class TxnActionsContainer(
         return actionsRes.map { it.ref.getGlobalId() }
     }
 
+    fun getActions(type: TxnActionType): List<TxnActionId> {
+        return actions[type]?.map { it.ref.getGlobalId() } ?: emptyList()
+    }
+
     fun addAction(type: TxnActionType, actionRef: TxnActionRef) {
         actions.computeIfAbsent(type) { TreeSet() }.add(
             TxnActionRefWithIdx(actionRef, index.getAndIncrement())
