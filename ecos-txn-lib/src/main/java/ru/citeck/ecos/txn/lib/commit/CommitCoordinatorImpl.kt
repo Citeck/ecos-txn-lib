@@ -8,12 +8,10 @@ import ru.citeck.ecos.txn.lib.commit.repo.NoopTwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitStatus
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
-import ru.citeck.ecos.txn.lib.manager.api.TxnManagerWebExecutor
-import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
+import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
+import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
+import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
-import ru.citeck.ecos.webapp.api.web.client.EcosWebClientApi
-import ru.citeck.ecos.webapp.api.web.client.EcosWebClientReq
-import ru.citeck.ecos.webapp.api.web.client.EcosWebClientResp
 import java.util.concurrent.atomic.AtomicBoolean
 
 class CommitCoordinatorImpl(
@@ -28,10 +26,9 @@ class CommitCoordinatorImpl(
     private val appLockApi = manager.webAppApi.getAppLockApi()
     private var currentApp: String = manager.webAppApi.getProperties().appName
     private val actionsManager = manager.actionsManager
-    private val webClient = manager.webAppApi.getWebClientApi()
+    private val remoteClient = manager.remoteClient
     private val commitCoordinatorApp = manager.props.commitCoordinatorApp
     private val micrometerContext = manager.micrometerContext
-    private val remoteWebAppsApi = manager.webAppApi.getRemoteWebAppsApi()
 
     override fun commitRoot(txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
 
@@ -49,11 +46,7 @@ class CommitCoordinatorImpl(
             if (appEntry.value.size == 1) {
                 val appToCommit = appEntry.key
                 commitObservation.observe {
-                    if (appToCommit == currentApp) {
-                        manager.getManagedTransaction(txnId).onePhaseCommit()
-                    } else {
-                        execRequest(appToCommit, txnId, TxnManagerWebExecutor.TYPE_ONE_PHASE_COMMIT, null) {}
-                    }
+                    remoteClient.onePhaseCommit(appToCommit, txnId)
                 }
                 actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
                 disposeRoot(txnId, setOf(appToCommit), null)
@@ -66,37 +59,36 @@ class CommitCoordinatorImpl(
                     "Commit coordinator app $commitCoordinatorApp doesn't support required web-api path."
                 }
             } else {
-                val commitReqBody = TxnManagerWebExecutor.TxnCommitReqBody(data, txnLevel)
-                execRequest(
-                    commitCoordinatorApp, txnId, TxnManagerWebExecutor.TYPE_COORDINATE_COMMIT,
-                    {
-                        it.body { w -> w.writeDto(commitReqBody) }
-                    }
-                ) {}
+                remoteClient.coordinateCommit(commitCoordinatorApp, txnId, data, txnLevel)
                 manager.dispose(txnId)
                 return
             }
         }
         repo.beforePrepare(txnId, data)
 
+        val txnApps = HashSet(data.apps.keys)
+        data.actions.forEach { (k, v) -> v.forEach { txnApps.add(it.appName) } }
+
         val preparedAppsToCommit = HashSet<String>()
-        data.apps.forEach { (app, _) ->
+        for (app in txnApps) {
             try {
-                val status = if (app == currentApp) {
-                    manager.getManagedTransaction(txnId).prepareCommit()
-                } else {
-                    execRequest(app, txnId, TxnManagerWebExecutor.TYPE_PREPARE_COMMIT, null) {
-                        it.getBodyReader().readDto(TxnManagerWebExecutor.PrepareCommitResp::class.java).status
+                if (data.apps.containsKey(app)) {
+                    val xids = remoteClient.prepareCommit(app, txnId)
+                    if (xids.isNotEmpty()) {
+                        preparedAppsToCommit.add(app)
+                    } else {
+                        // if app answered 'NOTHING TO COMMIT', then rollback and disposing is not required
+                        txnApps.remove(app)
                     }
-                }
-                if (status == CommitPrepareStatus.PREPARED) {
-                    preparedAppsToCommit.add(app)
+                } else {
+                    // app without txn resources
+                    remoteClient.onePhaseCommit(app, txnId)
                 }
             } catch (mainError: Throwable) {
-                repo.beforeRollback(txnId, data.apps.keys)
+                repo.beforeRollback(txnId, txnApps)
                 rollbackRoot(
                     txnId,
-                    preparedAppsToCommit,
+                    txnApps,
                     data.actions[TxnActionType.AFTER_ROLLBACK],
                     mainError,
                     txnLevel
@@ -115,11 +107,7 @@ class CommitCoordinatorImpl(
             var commitError: Throwable? = null
             for (appToCommit in preparedAppsToCommit) {
                 try {
-                    if (appToCommit == currentApp) {
-                        manager.getManagedTransaction(txnId).commitPrepared()
-                    } else {
-                        execRequest(appToCommit, txnId, TxnManagerWebExecutor.TYPE_COMMIT_PREPARED, null) {}
-                    }
+                    remoteClient.commitPrepared(appToCommit, txnId)
                     committedApps.add(appToCommit)
                 } catch (e: Throwable) {
                     // If a commit attempt fails for any app, the failed transaction
@@ -142,7 +130,7 @@ class CommitCoordinatorImpl(
         if (commitErrors.isEmpty()) {
             actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
         }
-        disposeRoot(txnId, data.apps.keys, null)
+        disposeRoot(txnId, txnApps, null)
     }
 
     override fun rollbackRoot(
@@ -153,6 +141,17 @@ class CommitCoordinatorImpl(
         txnLevel: Int
     ) {
 
+        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentApp) {
+            val coordinatorTxnStatus = remoteClient.getTxnStatus(commitCoordinatorApp, txnId)
+            if (coordinatorTxnStatus == TransactionStatus.ROLLED_BACK ||
+                coordinatorTxnStatus == TransactionStatus.NO_TRANSACTION
+            ) {
+                // already rolled back by coordinator
+                manager.dispose(txnId)
+                return
+            }
+        }
+
         val rollbackObservation = micrometerContext.createObservation("ecos.txn.rollback")
             .highCardinalityKeyValue("txnId", txnId.toString())
 
@@ -160,11 +159,7 @@ class CommitCoordinatorImpl(
         rollbackObservation.observe {
             for (app in apps) {
                 try {
-                    if (app == currentApp) {
-                        manager.getManagedTransaction(txnId).rollback(error)
-                    } else {
-                        execRequest(app, txnId, TxnManagerWebExecutor.TYPE_ROLLBACK, null) {}
-                    }
+                    remoteClient.rollback(app, txnId, error)
                 } catch (rollbackErr: Throwable) {
                     rollbackObservation.observation.error(rollbackErr)
                     error.addSuppressed(rollbackErr)
@@ -181,15 +176,12 @@ class CommitCoordinatorImpl(
     }
 
     override fun disposeRoot(txnId: TxnId, apps: Collection<String>, mainError: Throwable?) {
-        val appsToDispose = LinkedHashSet<String>()
+        log.debug { "[$txnId] Dispose txn for apps $apps" }
+        val appsToDispose = LinkedHashSet<String>(apps)
         appsToDispose.add(currentApp)
         for (app in appsToDispose) {
             try {
-                if (app == currentApp) {
-                    manager.dispose(txnId)
-                } else {
-                    execRequest(app, txnId, TxnManagerWebExecutor.TYPE_DISPOSE, null) {}
-                }
+                remoteClient.disposeTxn(app, txnId)
             } catch (e: Throwable) {
                 if (mainError != null) {
                     mainError.addSuppressed(e)
@@ -201,18 +193,18 @@ class CommitCoordinatorImpl(
     }
 
     private fun isRemoteCommitCoordinatorAvailable(): Boolean {
-        val apiVersion = webClient.getApiVersion(commitCoordinatorApp, TxnManagerWebExecutor.PATH, 1)
-        when (apiVersion) {
-            EcosWebClientApi.AV_APP_NOT_AVAILABLE -> error("App $commitCoordinatorApp is not available")
-            EcosWebClientApi.AV_PATH_NOT_SUPPORTED -> error(
-                "Path ${TxnManagerWebExecutor.PATH} doesn't supported " +
-                    "in app $commitCoordinatorApp is not available"
-            )
+        val res = remoteClient.isApiVersionSupported(
+            commitCoordinatorApp,
+            TxnManagerRemoteApiClient.COORDINATE_COMMIT_VER
+        )
+        when (res) {
+            ApiVersionRes.APP_NOT_AVAILABLE -> error("App $commitCoordinatorApp is not available")
+            else -> {}
         }
-        return apiVersion >= 1
+        return res == ApiVersionRes.SUPPORTED
     }
 
-    override fun recover(): Boolean {
+    override fun runTxnRecovering(): Boolean {
         if (repo == NoopTwoPhaseCommitRepo) {
             return false
         }
@@ -249,7 +241,7 @@ class CommitCoordinatorImpl(
                     app
                 } else {
                     val instanceFullId = "$app:$targetAppInstanceId"
-                    if (remoteWebAppsApi.isAppAvailable(instanceFullId)) {
+                    if (remoteClient.isAppAvailable(instanceFullId)) {
                         instanceFullId
                     } else {
                         app
@@ -257,45 +249,27 @@ class CommitCoordinatorImpl(
                 }
                 val xids = data.data.apps[app] ?: emptySet()
                 if (xids.isNotEmpty()) {
-                    if (app == currentApp) {
-                        if (isCommitting) {
-                            manager.getRecoveryManager().commitPrepared(xids.toList())
-                        } else {
-                            manager.getRecoveryManager().rollbackPrepared(xids.toList())
-                        }
-                    } else {
-                        val apiVersion = webClient.getApiVersion(
+                    when (
+                        remoteClient.isApiVersionSupported(
                             webReqTargetApp,
-                            TxnManagerWebExecutor.PATH,
-                            1
+                            TxnManagerRemoteApiClient.COORDINATE_COMMIT_VER
                         )
-                        when (apiVersion) {
-                            EcosWebClientApi.AV_APP_NOT_AVAILABLE -> {
-                                error("App '$app' is not available")
+                    ) {
+                        ApiVersionRes.SUPPORTED -> {
+                            if (isCommitting) {
+                                remoteClient.recoveryCommit(webReqTargetApp, data.txnId, xids)
+                            } else {
+                                remoteClient.recoveryRollback(webReqTargetApp, data.txnId, xids)
                             }
+                        }
 
-                            EcosWebClientApi.AV_PATH_NOT_SUPPORTED -> {
-                                error("Path ${TxnManagerWebExecutor.PATH} is not supported by app '$app'")
-                            }
+                        ApiVersionRes.APP_NOT_AVAILABLE -> {
+                            error("App '$app' is not available")
+                        }
 
-                            EcosWebClientApi.AV_VERSION_NOT_SUPPORTED -> {
-                                error("API version for path ${TxnManagerWebExecutor.PATH} is not supported by app '$app'")
-                            }
+                        ApiVersionRes.NOT_SUPPORTED -> {
+                            error("Recovery API is not supported by app '$app'")
                         }
-                        if (apiVersion < 1) {
-                            error("Application '$app' doesn't support recovery API")
-                        }
-                        val type = if (isCommitting) {
-                            TxnManagerWebExecutor.TYPE_RECOVERY_COMMIT
-                        } else {
-                            TxnManagerWebExecutor.TYPE_RECOVERY_ROLLBACK
-                        }
-                        execRequest(
-                            webReqTargetApp,
-                            data.txnId,
-                            type,
-                            { it.header(TxnManagerWebExecutor.HEADER_XIDS, xids) }
-                        ) {}
                     }
                 }
                 processedApps.add(app)
@@ -339,7 +313,7 @@ class CommitCoordinatorImpl(
                         appRef
                     }
                     if (appRef.isNotBlank()) {
-                        if (nonAliveApps.contains(appRef) || !remoteWebAppsApi.isAppAvailable(appRef)) {
+                        if (nonAliveApps.contains(appRef) || !remoteClient.isAppAvailable(appRef)) {
                             log.debug {
                                 "Action $action can't be executed, because target app $appRef is not alive"
                             }
@@ -354,25 +328,6 @@ class CommitCoordinatorImpl(
             }
         }
         return true
-    }
-
-    private fun <T> execRequest(
-        appName: String,
-        txnId: TxnId,
-        type: String,
-        custom: ((EcosWebClientReq) -> Unit)?,
-        result: (EcosWebClientResp) -> T
-    ): T {
-        val req = webClient.newRequest()
-            .targetApp(appName)
-            .version(webClient.getApiVersion(appName, TxnManagerWebExecutor.PATH, TxnManagerWebExecutor.VERSION))
-            .path(TxnManagerWebExecutor.PATH)
-            .header(TxnManagerWebExecutor.HEADER_TYPE, type)
-            .header(TxnManagerWebExecutor.HEADER_TXN_ID, txnId)
-
-        custom?.invoke(req)
-
-        return req.executeSync(result)
     }
 
     private inline fun debug(txnId: TxnId, crossinline message: () -> String) {

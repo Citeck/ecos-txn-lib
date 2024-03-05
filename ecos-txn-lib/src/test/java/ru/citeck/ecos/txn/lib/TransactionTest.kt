@@ -26,17 +26,18 @@ class TransactionTest {
         txnManager.init(appApiMock, EcosTxnProps())
         TxnContext.setManager(txnManager)
 
-        val txnId = TxnId.create("test", "")
-        val res0 = CustomRes("res-0", txnId)
-        val res1 = CustomRes("res-1", txnId)
+        val resources = ArrayList<CustomRes>()
 
         TxnContext.doInTxn {
-            TxnContext.getTxn().getOrAddRes(res0.getName()) { _, _ -> res0 }
-            TxnContext.getTxn().getOrAddRes(res1.getName()) { _, _ -> res1 }
+            val txnId = TxnContext.getTxn().getId()
+            resources.add(CustomRes("res-0", txnId))
+            resources.add(CustomRes("res-1", txnId))
+            resources.forEach {
+                TxnContext.getTxn().getOrAddRes(it.getName()) { _, _ -> it }
+            }
         }
 
-        assertThat(res0.status).isEqualTo(ResStatus.COMMITTED)
-        assertThat(res1.status).isEqualTo(ResStatus.COMMITTED)
+        assertThat(resources).allMatch { it.status == ResStatus.COMMITTED }
     }
 
     class CustomRes(

@@ -10,7 +10,7 @@ interface Transaction {
 
     fun <K : Any, T : TransactionResource> getOrAddRes(key: K, resource: (K, TxnId) -> T): T
 
-    fun addRemoteXids(appName: String, xids: Set<EcosXid>)
+    fun registerXids(appName: String, xids: Collection<EcosXid>)
 
     fun executeAction(actionId: Int)
 

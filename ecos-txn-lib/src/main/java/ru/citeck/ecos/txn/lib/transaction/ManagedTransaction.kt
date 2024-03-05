@@ -1,8 +1,8 @@
 package ru.citeck.ecos.txn.lib.transaction
 
-import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 
 interface ManagedTransaction : Transaction {
 
@@ -10,13 +10,19 @@ interface ManagedTransaction : Transaction {
 
     fun start()
 
+    fun setReadOnly(readOnly: Boolean)
+
     fun <T> doWithinTxn(managerCtx: TxnManagerContext, readOnly: Boolean, action: () -> T): T
 
     fun <T> doWithinTxn(readOnly: Boolean, action: () -> T): T
 
     fun getResourcesNames(): List<String>
 
-    fun prepareCommit(): CommitPrepareStatus
+    /**
+     * @return prepared resources xids. If this list is empty,
+     * then transaction can be disposed without any additional actions
+     */
+    fun prepareCommit(): List<EcosXid>
 
     fun commitPrepared()
 

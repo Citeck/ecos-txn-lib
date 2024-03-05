@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.manager
 
 import mu.KotlinLogging
+import org.slf4j.MDC
 import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.micrometer.EcosMicrometerContext
 import ru.citeck.ecos.txn.lib.action.TxnActionId
@@ -13,26 +14,30 @@ import ru.citeck.ecos.txn.lib.commit.repo.NoopTwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.manager.action.TxnActionsContainer
 import ru.citeck.ecos.txn.lib.manager.action.TxnActionsManager
+import ru.citeck.ecos.txn.lib.manager.api.client.CurrentAppClientWrapper
+import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
+import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerWebApiClient
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManager
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManagerImpl
-import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
-import ru.citeck.ecos.txn.lib.resource.TransactionResource
+import ru.citeck.ecos.txn.lib.manager.work.AlwaysStatelessExtTxnWorkContext
+import ru.citeck.ecos.txn.lib.manager.work.ExtTxnWorkContext
 import ru.citeck.ecos.txn.lib.transaction.*
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import ru.citeck.ecos.webapp.api.EcosWebAppApi
-import ru.citeck.ecos.webapp.api.apps.EcosRemoteWebAppsApi
 import ru.citeck.ecos.webapp.api.properties.EcosWebAppProps
 import ru.citeck.ecos.webapp.api.task.executor.EcosTaskExecutorApi
-import ru.citeck.ecos.webapp.api.web.client.EcosWebClientApi
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.collections.LinkedHashMap
 import kotlin.collections.LinkedHashSet
 
 class TransactionManagerImpl : TransactionManager {
 
     companion object {
         private val log = KotlinLogging.logger {}
+
+        private const val MDC_TXN_ID_KEY = "ecosTxnId"
     }
 
     internal lateinit var props: EcosTxnProps
@@ -40,11 +45,10 @@ class TransactionManagerImpl : TransactionManager {
     internal lateinit var micrometerContext: EcosMicrometerContext
     internal lateinit var actionsManager: TxnActionsManager
     internal lateinit var commitCoordinator: CommitCoordinator
+    internal lateinit var remoteClient: TxnManagerRemoteApiClient
 
     private lateinit var webAppProps: EcosWebAppProps
     private lateinit var txnActionsExecutor: EcosTaskExecutorApi
-    private lateinit var webClientApi: EcosWebClientApi
-    private lateinit var remoteWebAppsApi: EcosRemoteWebAppsApi
     private lateinit var txnManagerJob: TxnManagerJob
     private lateinit var recoveryManager: RecoveryManager
 
@@ -56,14 +60,20 @@ class TransactionManagerImpl : TransactionManager {
         webAppApi: EcosWebAppApi,
         props: EcosTxnProps = EcosTxnProps(),
         micrometerContext: EcosMicrometerContext = EcosMicrometerContext.NOOP,
-        twoPhaseCommitRepo: TwoPhaseCommitRepo = NoopTwoPhaseCommitRepo
+        twoPhaseCommitRepo: TwoPhaseCommitRepo = NoopTwoPhaseCommitRepo,
+        remoteClient: TxnManagerRemoteApiClient? = null
     ) {
         this.props = props
         this.webAppApi = webAppApi
         this.webAppProps = webAppApi.getProperties()
         this.txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
-        this.webClientApi = webAppApi.getWebClientApi()
-        this.remoteWebAppsApi = webAppApi.getRemoteWebAppsApi()
+        this.remoteClient = CurrentAppClientWrapper(
+            remoteClient ?: TxnManagerWebApiClient(
+                webAppApi.getWebClientApi(),
+                webAppApi.getRemoteWebAppsApi()
+            ),
+            this
+        )
 
         this.micrometerContext = micrometerContext
         this.actionsManager = TxnActionsManager(this)
@@ -75,6 +85,7 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     override fun coordinateCommit(txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
+        logDebug(txnId) { "Coordinate commit called. Data: $data txnLevel: $txnLevel" }
         commitCoordinator.commitRoot(txnId, data, txnLevel)
     }
 
@@ -112,15 +123,15 @@ class TransactionManagerImpl : TransactionManager {
         extCtx: TxnManagerContext,
         policy: TransactionPolicy,
         readOnly: Boolean,
-        action: () -> T
+        action: (ExtTxnWorkContext) -> T
     ): T {
 
         return when (policy) {
-            TransactionPolicy.NOT_SUPPORTED -> doWithoutTxn(action)
-            TransactionPolicy.REQUIRES_NEW -> doInNewTxn(readOnly, action)
+            TransactionPolicy.NOT_SUPPORTED -> doWithoutTxn { action(AlwaysStatelessExtTxnWorkContext) }
+            TransactionPolicy.REQUIRES_NEW -> doInNewTxn(readOnly) { action(AlwaysStatelessExtTxnWorkContext) }
             TransactionPolicy.SUPPORTS -> {
                 if (extTxnId.isEmpty()) {
-                    action.invoke()
+                    action.invoke(AlwaysStatelessExtTxnWorkContext)
                 } else {
                     doInExtTxn(extTxnId, readOnly, extCtx, action)
                 }
@@ -128,7 +139,7 @@ class TransactionManagerImpl : TransactionManager {
 
             TransactionPolicy.REQUIRED -> {
                 if (extTxnId.isEmpty()) {
-                    doInNewTxn(readOnly) { action.invoke() }
+                    doInNewTxn(readOnly) { action.invoke(AlwaysStatelessExtTxnWorkContext) }
                 } else {
                     doInExtTxn(extTxnId, readOnly, extCtx, action)
                 }
@@ -136,7 +147,12 @@ class TransactionManagerImpl : TransactionManager {
         }
     }
 
-    private fun <T> doInExtTxn(extTxnId: TxnId, readOnly: Boolean, ctx: TxnManagerContext, action: () -> T): T {
+    private fun <T> doInExtTxn(
+        extTxnId: TxnId,
+        readOnly: Boolean,
+        ctx: TxnManagerContext,
+        action: (ExtTxnWorkContext) -> T
+    ): T {
 
         var isNewLocalTxn = false
 
@@ -147,16 +163,26 @@ class TransactionManagerImpl : TransactionManager {
             TransactionInfo(txn)
         }.transaction
 
-        return try {
-            doWithinTxn(transaction, readOnly, ctx, action)
-        } finally {
-            if (isNewLocalTxn && (transaction.isEmpty() || readOnly)) {
-                try {
-                    dispose(extTxnId)
-                } catch (e: Throwable) {
-                    log.error(e) { "[${transaction.getId()}] Error while dispose local-external transaction" }
+        val workContext = object : ExtTxnWorkContext {
+            override fun stopWork(): Boolean {
+                val workWasStateless = isNewLocalTxn && (transaction.isEmpty() || readOnly)
+                if (workWasStateless) {
+                    try {
+                        dispose(extTxnId)
+                    } catch (e: Throwable) {
+                        logError(extTxnId, e) { "Error while dispose local-external transaction" }
+                    }
                 }
+                return !workWasStateless
             }
+        }
+
+        return try {
+            doWithinTxn(transaction, readOnly, ctx) {
+                action(workContext)
+            }
+        } finally {
+            workContext.stopWork()
         }
     }
 
@@ -166,7 +192,12 @@ class TransactionManagerImpl : TransactionManager {
 
     internal fun <T> doInNewTxn(readOnly: Boolean, txnLevel: Int, action: () -> T): T {
 
-        log.debug { "Do in new txn called. ReadOnly: $readOnly level: $txnLevel" }
+        log.debug {
+            "Do in new txn called. " +
+                "ReadOnly: $readOnly " +
+                "level: $txnLevel " +
+                "currentTxn: ${currentTxn.get()?.getId()}"
+        }
 
         val transactionStartTime = System.currentTimeMillis()
 
@@ -181,15 +212,14 @@ class TransactionManagerImpl : TransactionManager {
 
         val txnManagerContext = object : TxnManagerContext {
             override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {
-                actions.addAction(type, actionRef)
+                if (!readOnly) {
+                    registerXids(actionRef.appName, emptySet())
+                    actions.addAction(type, actionRef)
+                }
             }
 
-            override fun addRemoteXids(appName: String, xids: Set<EcosXid>) {
+            override fun registerXids(appName: String, xids: Collection<EcosXid>) {
                 xidsByApp.computeIfAbsent(appName) { LinkedHashSet() }.addAll(xids)
-            }
-
-            override fun onResourceAdded(resource: TransactionResource) {
-                addRemoteXids(webAppProps.appName, setOf(resource.getXid()))
             }
         }
 
@@ -203,7 +233,6 @@ class TransactionManagerImpl : TransactionManager {
                     .highCardinalityKeyValue("txnId") { newTxnId.toString() }
 
                 val actionRes = txnActionObservation.observe { action.invoke() }
-                val afterCommitActions = actions.drainActions(TxnActionType.AFTER_COMMIT)
 
                 if (readOnly) {
                     AuthContext.runAsSystem {
@@ -214,6 +243,7 @@ class TransactionManagerImpl : TransactionManager {
                     AuthContext.runAsSystem {
                         actions.executeBeforeCommitActions()
                         val twopcActions = EnumMap<TxnActionType, List<TxnActionId>>(TxnActionType::class.java)
+                        val afterCommitActions = actions.getActions(TxnActionType.AFTER_COMMIT)
                         if (afterCommitActions.isNotEmpty()) {
                             twopcActions[TxnActionType.AFTER_COMMIT] = afterCommitActions
                         }
@@ -229,8 +259,13 @@ class TransactionManagerImpl : TransactionManager {
                 }
             } catch (error: Throwable) {
                 AuthContext.runAsSystem {
-                    if (readOnly) {
-                        commitCoordinator.disposeRoot(newTxnId, xidsByApp.keys, error)
+                    if (readOnly || transaction.getStatus() == TransactionStatus.COMMITTED ||
+                        transaction.getStatus() == TransactionStatus.ROLLED_BACK
+                    ) {
+                        // transaction may be disposed early by commit coordinator
+                        if (transactionsById.contains(newTxnId)) {
+                            dispose(newTxnId)
+                        }
                     } else {
                         commitCoordinator.rollbackRoot(
                             newTxnId,
@@ -243,12 +278,12 @@ class TransactionManagerImpl : TransactionManager {
                 }
                 throw error
             } finally {
-                transactionsById.remove(newTxnId)
+                dispose(newTxnId)
             }
         }
 
         val totalTime = System.currentTimeMillis() - transactionStartTime
-        debug(transaction) { "Do in new txn finished. ReadOnly: $readOnly level: $txnLevel. Total time: $totalTime ms" }
+        logDebug(transaction) { "Do in new txn finished. ReadOnly: $readOnly level: $txnLevel. Total time: $totalTime ms" }
 
         return result
     }
@@ -261,7 +296,10 @@ class TransactionManagerImpl : TransactionManager {
     ): T {
         val prevTxn = currentTxn.get()
         currentTxn.set(transaction)
+        var mdcTxnIdBefore: String? = null
         try {
+            mdcTxnIdBefore = MDC.get(MDC_TXN_ID_KEY)
+            MDC.put(MDC_TXN_ID_KEY, transaction.getId().toString())
             return transaction.doWithinTxn(ctx, readOnly, action)
         } finally {
             if (prevTxn == null) {
@@ -269,34 +307,55 @@ class TransactionManagerImpl : TransactionManager {
             } else {
                 currentTxn.set(prevTxn)
             }
+            if (mdcTxnIdBefore == null) {
+                MDC.remove(MDC_TXN_ID_KEY)
+            } else {
+                MDC.put(MDC_TXN_ID_KEY, mdcTxnIdBefore)
+            }
         }
     }
 
     private fun <T> doWithoutTxn(action: () -> T): T {
         val prevTxn = currentTxn.get()
         currentTxn.remove()
+        var mdcTxnIdBefore: String? = null
         return try {
+            mdcTxnIdBefore = MDC.get(MDC_TXN_ID_KEY)
+            MDC.put(MDC_TXN_ID_KEY, "no-txn")
             action.invoke()
         } finally {
             if (prevTxn != null) {
                 currentTxn.set(prevTxn)
             }
+            if (mdcTxnIdBefore == null) {
+                MDC.remove(MDC_TXN_ID_KEY)
+            } else {
+                MDC.put(MDC_TXN_ID_KEY, mdcTxnIdBefore)
+            }
         }
     }
 
-    private inline fun debug(transaction: Transaction, crossinline message: () -> String) {
-        log.debug { "[${transaction.getId()}] " + message() }
+    private inline fun logError(txnId: TxnId, e: Throwable, crossinline message: () -> String) {
+        log.error(e) { "[$txnId]" + message.invoke() }
+    }
+
+    private inline fun logDebug(transaction: Transaction, crossinline message: () -> String) {
+        logDebug(transaction.getId(), message)
+    }
+
+    private inline fun logDebug(txnId: TxnId, crossinline message: () -> String) {
+        log.debug { "[$txnId] " + message() }
     }
 
     override fun getCurrentTransaction(): Transaction? {
         return currentTxn.get()
     }
 
-    override fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): CommitPrepareStatus {
+    override fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): List<EcosXid> {
         val txnInfo = transactionsById[txnId] ?: error("Transaction is not found: '$txnId'")
         txnInfo.managerCanRecoverPreparedTxn = managerCanRecoverPreparedTxn
         val result = txnInfo.transaction.prepareCommit()
-        if (result == CommitPrepareStatus.NOTHING_TO_COMMIT) {
+        if (result.isEmpty()) {
             dispose(txnId)
         }
         return result

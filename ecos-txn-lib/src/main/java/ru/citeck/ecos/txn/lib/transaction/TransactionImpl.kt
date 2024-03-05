@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.transaction
 
 import mu.KotlinLogging
+import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
@@ -19,8 +20,8 @@ import kotlin.collections.LinkedHashMap
 
 class TransactionImpl(
     private val txnId: TxnId,
-    private val appName: String,
-    private val initialReadOnly: Boolean
+    private val currentAppName: String,
+    initialReadOnly: Boolean
 ) : ManagedTransaction {
 
     companion object {
@@ -38,6 +39,7 @@ class TransactionImpl(
 
     private var txnStatus: TransactionStatus = TransactionStatus.NEW
 
+    private var baseReadOnly: Boolean = initialReadOnly
     private var readOnly = initialReadOnly
 
     private val synchronizations = ArrayList<TransactionSynchronization>()
@@ -46,6 +48,11 @@ class TransactionImpl(
 
     private val isIdle = AtomicBoolean(true)
     private val lastActiveTime = AtomicReference(Instant.now())
+
+    override fun setReadOnly(readOnly: Boolean) {
+        this.baseReadOnly = readOnly
+        this.readOnly = readOnly
+    }
 
     override fun start() {
         logDebug { "txn start" }
@@ -61,12 +68,13 @@ class TransactionImpl(
         return resources.map { it.name }
     }
 
-    override fun addRemoteXids(appName: String, xids: Set<EcosXid>) {
+    override fun registerXids(appName: String, xids: Collection<EcosXid>) {
         logDebug { "registerRemoteXids for app $appName xids: $xids" }
         if (txnStatus != TransactionStatus.ACTIVE) {
             error("[$txnId] Remote xids can't be added when transaction is not active. AppName: $appName xids: $xids")
         }
-        txnManagerContext.addRemoteXids(appName, xids)
+        txnManagerContext.registerXids(appName, xids)
+        updateLastActiveTime()
     }
 
     override fun <K : Any, T : TransactionResource> getOrAddRes(key: K, resource: (K, TxnId) -> T): T {
@@ -80,28 +88,35 @@ class TransactionImpl(
             }
             logDebug { "Create new resource for key $key" }
             val res = resource.invoke(key, txnId)
+            if (res.getXid().getTransactionId() != txnId) {
+                error("Resource ${res.getXid()} with name ${res.getName()} is not belongs to transaction $txnId")
+            }
             res.start()
             val data = ResourceData(res, res.getName())
             resources.add(data)
             resourcesByKey[key] = data
-            txnManagerContext.onResourceAdded(res)
+            txnManagerContext.registerXids(currentAppName, setOf(res.getXid()))
             res
         }
+        updateLastActiveTime()
         @Suppress("UNCHECKED_CAST")
         return resourceRes as T
     }
 
     override fun executeAction(actionId: Int) {
         logDebug { "Execute action $actionId" }
+        updateLastActiveTime()
         val action = actionsById[actionId] ?: error("Action is not found by id $actionId")
-        if (action.executed) {
-            error("Action with id $actionId already executed")
+        if (!action.executed.get()) {
+            try {
+                action.action.invoke()
+            } finally {
+                action.executed.set(true)
+            }
+        } else {
+            logDebug { "Action with id $actionId already executed" }
         }
-        try {
-            action.action.invoke()
-        } finally {
-            action.executed = true
-        }
+        updateLastActiveTime()
     }
 
     override fun <T> doWithinTxn(managerCtx: TxnManagerContext, readOnly: Boolean, action: () -> T): T {
@@ -109,13 +124,13 @@ class TransactionImpl(
         this.txnManagerContext = managerCtx
         val idleBefore = isIdle.get()
         isIdle.set(false)
-        lastActiveTime.set(Instant.now())
+        updateLastActiveTime()
         try {
             return doWithReadOnlyFlag(readOnly, action)
         } finally {
             this.txnManagerContext = prevContext
             isIdle.set(idleBefore)
-            lastActiveTime.set(Instant.now())
+            updateLastActiveTime()
         }
     }
 
@@ -153,24 +168,31 @@ class TransactionImpl(
         checkStatus(TransactionStatus.ACTIVE)
         val actionId = actionCounter.getAndIncrement()
         actionsById[actionId] = ActionData(action)
-        addAction(type, TxnActionRef(appName, actionId, order))
+        addAction(type, TxnActionRef(currentAppName, actionId, order))
     }
 
-    override fun prepareCommit(): CommitPrepareStatus {
+    override fun prepareCommit(): List<EcosXid> {
         logDebug { "Prepare commit" }
         checkStatus(TransactionStatus.ACTIVE)
         setStatus(TransactionStatus.PREPARING)
-        var status = CommitPrepareStatus.NOTHING_TO_COMMIT
+        val preparedXids = ArrayList<EcosXid>()
+
         for (res in resources) {
             res.resource.end()
         }
         for (res in resources) {
             if (res.resource.prepareCommit() == CommitPrepareStatus.PREPARED) {
-                status = CommitPrepareStatus.PREPARED
+                preparedXids.add(res.resource.getXid())
+            } else {
+                res.readOnlyOnPrepare = true
             }
         }
         setStatus(TransactionStatus.PREPARED)
-        return status
+        if (preparedXids.isEmpty() && actionsById.isNotEmpty()) {
+            preparedXids.add(EcosXid.create(txnId, ByteArray(0)))
+        }
+        logDebug { "Prepare commit completed with xids: $preparedXids" }
+        return preparedXids
     }
 
     override fun commitPrepared() {
@@ -178,7 +200,9 @@ class TransactionImpl(
         checkStatus(TransactionStatus.PREPARED)
         setStatus(TransactionStatus.COMMITTING)
         for (resData in resources) {
-            resData.resource.commitPrepared()
+            if (!resData.readOnlyOnPrepare) {
+                resData.resource.commitPrepared()
+            }
             resData.committed = true
         }
         setStatus(TransactionStatus.COMMITTED)
@@ -220,7 +244,6 @@ class TransactionImpl(
             TransactionStatus.COMMITTING
         )
         setStatus(TransactionStatus.ROLLING_BACK)
-        // val errorsRes = mutableListOf<Throwable>()
         for (resData in resources) {
             if (!resData.committed) {
                 try {
@@ -292,22 +315,33 @@ class TransactionImpl(
                 logError(e) { "Exception while disposing resource '${resData.name}'" }
             }
         }
+        resources.clear()
+        actionsById.clear()
         setStatus(TransactionStatus.DISPOSED)
     }
 
     private inline fun logDebug(crossinline msg: () -> String) {
-        if (!initialReadOnly) {
-            log.debug { "[" + txnId + "] " + msg.invoke() }
+        if (!baseReadOnly) {
+            log.debug { getTxnForLog() + msg.invoke() }
         } else {
-            log.trace { "[" + txnId + "] " + msg.invoke() }
+            log.trace { getTxnForLog() + msg.invoke() }
         }
     }
 
     private inline fun logError(e: Throwable, crossinline msg: () -> String) {
-        log.error(e) { "[" + txnId + "] " + msg.invoke() }
+        log.error(e) { getTxnForLog() + msg.invoke() }
     }
     private inline fun logError(crossinline msg: () -> String) {
-        log.error { "[" + txnId + "] " + msg.invoke() }
+        log.error { getTxnForLog() + msg.invoke() }
+    }
+
+    private fun getTxnForLog(): String {
+        val currentTxn = TxnContext.getTxnOrNull()
+        return if (currentTxn?.getId() == this.txnId) {
+            "[${this.txnId}] "
+        } else {
+            "[${currentTxn?.getId()}->${this.txnId}] "
+        }
     }
 
     override fun getStatus(): TransactionStatus {
@@ -318,7 +352,7 @@ class TransactionImpl(
         if (newStatus == this.txnStatus) {
             return
         }
-        lastActiveTime.set(Instant.now())
+        updateLastActiveTime()
         if (newStatus == TransactionStatus.PREPARING || newStatus == TransactionStatus.COMMITTING) {
             synchronizations.forEach {
                 it.beforeCompletion()
@@ -335,11 +369,15 @@ class TransactionImpl(
                 }
             }
         }
-        lastActiveTime.set(Instant.now())
+        updateLastActiveTime()
     }
 
     override fun isIdle(): Boolean {
         return isIdle.get()
+    }
+
+    private fun updateLastActiveTime() {
+        lastActiveTime.set(Instant.now())
     }
 
     override fun getLastActiveTime(): Instant {
@@ -366,12 +404,13 @@ class TransactionImpl(
 
     private class ActionData(
         val action: () -> Unit,
-        var executed: Boolean = false
+        val executed: AtomicBoolean = AtomicBoolean(false)
     )
 
     private class ResourceData(
         val resource: TransactionResource,
         val name: String,
+        var readOnlyOnPrepare: Boolean = false,
         var committed: Boolean = false
     )
 }

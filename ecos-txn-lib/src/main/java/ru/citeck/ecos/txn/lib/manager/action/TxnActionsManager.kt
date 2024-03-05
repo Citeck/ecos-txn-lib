@@ -1,11 +1,9 @@
 package ru.citeck.ecos.txn.lib.manager.action
 
 import mu.KotlinLogging
-import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.action.TxnActionId
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
-import ru.citeck.ecos.txn.lib.manager.api.TxnManagerWebExecutor
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 
 class TxnActionsManager(
@@ -16,20 +14,19 @@ class TxnActionsManager(
         private val log = KotlinLogging.logger {}
     }
 
-    private val webClientApi = manager.webAppApi.getWebClientApi()
-    private val properties = manager.webAppApi.getProperties()
+    private val remoteClient = manager.remoteClient
 
     fun executeActionsAfterCommit(txnId: TxnId, txnLevel: Int, actions: List<TxnActionId>?) {
         actions ?: return
         executeActionsImpl(txnId, TxnActionType.AFTER_COMMIT) {
             actions.forEach { actionId ->
-                manager.doInNewTxn(false, txnLevel + 1) {
-                    try {
+                try {
+                    manager.doInNewTxn(false, txnLevel + 1) {
                         executeActionById(txnId, TxnActionType.AFTER_COMMIT, actionId)
-                    } catch (mainError: Throwable) {
-                        log.error(mainError) {
-                            "After commit action execution error. Id: $actionId"
-                        }
+                    }
+                } catch (mainError: Throwable) {
+                    log.error(mainError) {
+                        "After commit action execution error. Id: $actionId"
                     }
                 }
             }
@@ -40,17 +37,17 @@ class TxnActionsManager(
         actions ?: return
         executeActionsImpl(txnId, TxnActionType.AFTER_ROLLBACK) {
             actions.forEach { actionId ->
-                manager.doInNewTxn(false, txnLevel + 1) {
-                    try {
+                try {
+                    manager.doInNewTxn(false, txnLevel + 1) {
                         executeActionById(txnId, TxnActionType.AFTER_ROLLBACK, actionId)
-                    } catch (afterRollbackActionErr: Throwable) {
-                        mainError.addSuppressed(
-                            RuntimeException(
-                                "[$txnId] After rollback action execution error. Id: $actionId",
-                                afterRollbackActionErr
-                            )
-                        )
                     }
+                } catch (afterRollbackActionErr: Throwable) {
+                    mainError.addSuppressed(
+                        RuntimeException(
+                            "[$txnId] After rollback action execution error. Id: $actionId",
+                            afterRollbackActionErr
+                        )
+                    )
                 }
             }
         }
@@ -78,19 +75,7 @@ class TxnActionsManager(
 
         val actionStartTime = System.currentTimeMillis()
 
-        if (actionId.appName == properties.appName) {
-            manager.getManagedTransaction(txnId).executeAction(actionId.localId)
-        } else {
-            AuthContext.runAsSystem {
-                webClientApi.newRequest()
-                    .targetApp(actionId.appName)
-                    .path(TxnManagerWebExecutor.PATH)
-                    .header(TxnManagerWebExecutor.HEADER_TXN_ID, txnId)
-                    .header(TxnManagerWebExecutor.HEADER_TYPE, TxnManagerWebExecutor.TYPE_EXEC_ACTION)
-                    .header(TxnManagerWebExecutor.HEADER_ACTION_ID, actionId.localId)
-                    .execute {}.get()
-            }
-        }
+        remoteClient.executeTxnAction(actionId.appName, txnId, actionId.localId)
 
         val executedTime = System.currentTimeMillis() - actionStartTime
         debug(txnId) { "Action $type with id: $actionId, executed in $executedTime ms" }

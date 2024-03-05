@@ -40,10 +40,10 @@ class JavaXaTxnResourceAdapter(
     override fun prepareCommit(): CommitPrepareStatus {
         val result = resource.prepare(xid)
         return if (result and XAResource.XA_RDONLY > 0) {
-            log.info { "[$txnId][$name] Prepare with READ ONLY result" }
+            log.debug { "[$txnId][$name] Prepare with READ ONLY result" }
             CommitPrepareStatus.NOTHING_TO_COMMIT
         } else {
-            log.info { "[$txnId][$name] Prepare with PREPARED result" }
+            log.debug { "[$txnId][$name] Prepare with PREPARED result" }
             CommitPrepareStatus.PREPARED
         }
     }

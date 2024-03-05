@@ -17,11 +17,6 @@ class TxnActionsContainer(
     private val actions: MutableMap<TxnActionType, MutableSet<TxnActionRefWithIdx>> = EnumMap(TxnActionType::class.java)
     private val actionsManager = manager.actionsManager
 
-    fun drainActions(type: TxnActionType): List<TxnActionId> {
-        val actionsRes = actions.remove(type) ?: return emptyList()
-        return actionsRes.map { it.ref.getGlobalId() }
-    }
-
     fun getActions(type: TxnActionType): List<TxnActionId> {
         return actions[type]?.map { it.ref.getGlobalId() } ?: emptyList()
     }
