@@ -52,8 +52,9 @@ class CommitCoordinatorImpl(
                 commitObservation.observe {
                     remoteClient.onePhaseCommit(appToCommit, txnId)
                 }
-                actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
-                disposeRoot(txnId, setOf(appToCommit), null)
+                actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT]).finally {
+                    disposeRoot(txnId, setOf(appToCommit), null)
+                }
                 return
             }
         }
