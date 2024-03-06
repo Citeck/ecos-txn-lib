@@ -4,9 +4,9 @@ import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 
 interface RecoveryManager {
 
-    fun commitPrepared(xids: List<EcosXid>)
+    fun commitPrepared(xids: Collection<EcosXid>)
 
-    fun rollbackPrepared(xids: List<EcosXid>)
+    fun rollbackPrepared(xids: Collection<EcosXid>)
 
     fun registerStorage(storage: RecoverableStorage)
 }

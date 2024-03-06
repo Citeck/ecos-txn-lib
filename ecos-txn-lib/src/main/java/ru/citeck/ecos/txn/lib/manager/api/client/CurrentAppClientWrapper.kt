@@ -62,7 +62,7 @@ class CurrentAppClientWrapper(
 
     override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) {
         if (app == currentApp) {
-            manager.getRecoveryManager().commitPrepared(xids.toList())
+            manager.recoveryCommit(txnId, xids)
         } else {
             impl.recoveryCommit(app, txnId, xids)
         }
@@ -70,7 +70,7 @@ class CurrentAppClientWrapper(
 
     override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) {
         if (app == currentApp) {
-            manager.getRecoveryManager().rollbackPrepared(xids.toList())
+            manager.recoveryRollback(txnId, xids)
         } else {
             impl.recoveryRollback(app, txnId, xids)
         }

@@ -40,5 +40,9 @@ interface TransactionManager {
 
     fun getRecoveryManager(): RecoveryManager
 
+    fun recoveryCommit(txnId: TxnId, xids: Collection<EcosXid>)
+
+    fun recoveryRollback(txnId: TxnId, xids: Collection<EcosXid>)
+
     fun shutdown()
 }

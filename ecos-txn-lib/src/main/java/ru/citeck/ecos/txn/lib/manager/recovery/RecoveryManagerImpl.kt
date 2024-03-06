@@ -7,7 +7,7 @@ class RecoveryManagerImpl : RecoveryManager {
 
     private val storages = CopyOnWriteArrayList<RecoverableStorage>()
 
-    override fun commitPrepared(xids: List<EcosXid>) {
+    override fun commitPrepared(xids: Collection<EcosXid>) {
         if (xids.isEmpty()) {
             return
         }
@@ -17,7 +17,7 @@ class RecoveryManagerImpl : RecoveryManager {
         }
     }
 
-    override fun rollbackPrepared(xids: List<EcosXid>) {
+    override fun rollbackPrepared(xids: Collection<EcosXid>) {
         if (xids.isEmpty()) {
             return
         }

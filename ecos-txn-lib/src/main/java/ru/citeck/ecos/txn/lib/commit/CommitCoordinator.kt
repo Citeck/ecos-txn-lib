@@ -15,7 +15,7 @@ interface CommitCoordinator {
         txnLevel: Int
     )
 
-    fun disposeRoot(txnId: TxnId, apps: Collection<String>, mainError: Throwable?)
+    fun disposeRoot(txnId: TxnId, apps: Collection<String>, mainError: Throwable?, disposeCurrentApp: Boolean = true)
 
-    fun runTxnRecovering(): Boolean
+    fun runTxnRecovering()
 }

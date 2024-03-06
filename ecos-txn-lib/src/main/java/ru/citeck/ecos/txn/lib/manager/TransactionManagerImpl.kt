@@ -192,11 +192,13 @@ class TransactionManagerImpl : TransactionManager {
 
     internal fun <T> doInNewTxn(readOnly: Boolean, txnLevel: Int, action: () -> T): T {
 
+        val newTxnId = TxnId.create(webAppProps.appName, webAppProps.appInstanceId)
+
         log.debug {
             "Do in new txn called. " +
                 "ReadOnly: $readOnly " +
                 "level: $txnLevel " +
-                "currentTxn: ${currentTxn.get()?.getId()}"
+                "currentTxn: ${currentTxn.get()?.getId()} newTxn: $newTxnId"
         }
 
         val transactionStartTime = System.currentTimeMillis()
@@ -204,7 +206,6 @@ class TransactionManagerImpl : TransactionManager {
         if (txnLevel >= 10) {
             error("Transaction actions level overflow error")
         }
-        val newTxnId = TxnId.create(webAppProps.appName, webAppProps.appInstanceId)
         val transaction = TransactionImpl(newTxnId, webAppProps.appName, readOnly)
 
         val actions = TxnActionsContainer(newTxnId, this)
@@ -263,7 +264,7 @@ class TransactionManagerImpl : TransactionManager {
                         transaction.getStatus() == TransactionStatus.ROLLED_BACK
                     ) {
                         // transaction may be disposed early by commit coordinator
-                        if (transactionsById.contains(newTxnId)) {
+                        if (transactionsById.containsKey(newTxnId)) {
                             dispose(newTxnId)
                         }
                     } else {
@@ -277,8 +278,6 @@ class TransactionManagerImpl : TransactionManager {
                     }
                 }
                 throw error
-            } finally {
-                dispose(newTxnId)
             }
         }
 
@@ -381,6 +380,24 @@ class TransactionManagerImpl : TransactionManager {
         return transactionsById[txnId]?.transaction?.getStatus() ?: TransactionStatus.NO_TRANSACTION
     }
 
+    override fun recoveryCommit(txnId: TxnId, xids: Collection<EcosXid>) {
+        val txn = getManagedTransactionOrNull(txnId)
+        if (txn != null) {
+            txn.commitPrepared()
+        } else {
+            recoveryManager.commitPrepared(xids)
+        }
+    }
+
+    override fun recoveryRollback(txnId: TxnId, xids: Collection<EcosXid>) {
+        val txn = getManagedTransactionOrNull(txnId)
+        if (txn != null) {
+            txn.rollback(null)
+        } else {
+            recoveryManager.rollbackPrepared(xids)
+        }
+    }
+
     override fun getRecoveryManager(): RecoveryManager {
         return recoveryManager
     }
@@ -392,6 +409,7 @@ class TransactionManagerImpl : TransactionManager {
     internal class TransactionInfo(
         val transaction: ManagedTransaction,
         var managerCanRecoverPreparedTxn: Boolean = false,
-        var lastAliveTime: Long = System.currentTimeMillis()
+        var lastAliveTime: Long = System.currentTimeMillis(),
+        var commitDelegatedToApp: String = ""
     )
 }

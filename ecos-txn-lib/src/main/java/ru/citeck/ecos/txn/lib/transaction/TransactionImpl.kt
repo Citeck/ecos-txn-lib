@@ -301,7 +301,9 @@ class TransactionImpl(
                 onePhaseCommit()
             } else {
                 logError { "Uncompleted transaction disposing. Status: $txnStatus" }
-                val rollbackCause = RuntimeException("Uncompleted transaction disposing. TxnId: $txnId Status: $txnStatus")
+                val rollbackCause = RuntimeException(
+                    "Uncompleted transaction disposing. TxnId: $txnId Status: $txnStatus"
+                )
                 rollback(rollbackCause)
                 if (rollbackCause.suppressed.isNotEmpty()) {
                     logError(rollbackCause) { "Exceptions occurred while rollback of $txnId" }

@@ -12,7 +12,7 @@ import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.CopyOnWriteArrayList
 
 class CommitCoordinatorImpl(
     private val repo: TwoPhaseCommitRepo,
@@ -24,11 +24,15 @@ class CommitCoordinatorImpl(
     }
 
     private val appLockApi = manager.webAppApi.getAppLockApi()
-    private var currentApp: String = manager.webAppApi.getProperties().appName
+    private val currentAppName: String = manager.webAppApi.getProperties().appName
+    private val currentAppInstanceId: String = manager.webAppApi.getProperties().appInstanceId
+    private val currentAppRef = "$currentAppName:$currentAppInstanceId"
     private val actionsManager = manager.actionsManager
     private val remoteClient = manager.remoteClient
     private val commitCoordinatorApp = manager.props.commitCoordinatorApp
     private val micrometerContext = manager.micrometerContext
+
+    private val localTransactionsToRecover = CopyOnWriteArrayList<TxnId>()
 
     override fun commitRoot(txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
 
@@ -53,21 +57,26 @@ class CommitCoordinatorImpl(
                 return
             }
         }
-        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentApp) {
+
+        val txnApps = HashSet(data.apps.keys)
+        data.actions.forEach { (_, v) -> v.forEach { txnApps.add(it.appName) } }
+
+        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentAppName) {
             if (!isRemoteCommitCoordinatorAvailable()) {
                 log.debug {
                     "Commit coordinator app $commitCoordinatorApp doesn't support required web-api path."
                 }
             } else {
                 remoteClient.coordinateCommit(commitCoordinatorApp, txnId, data, txnLevel)
-                manager.dispose(txnId)
+                if (!txnApps.contains(currentAppName)) {
+                    manager.dispose(txnId)
+                } else {
+                    manager.transactionsById[txnId]?.commitDelegatedToApp = commitCoordinatorApp
+                }
                 return
             }
         }
         repo.beforePrepare(txnId, data)
-
-        val txnApps = HashSet(data.apps.keys)
-        data.actions.forEach { (k, v) -> v.forEach { txnApps.add(it.appName) } }
 
         val preparedAppsToCommit = HashSet<String>()
         for (app in txnApps) {
@@ -97,14 +106,18 @@ class CommitCoordinatorImpl(
             }
         }
 
+        // after this line transaction become eventually committed
+        // if something went wrong after this line, then we should not
+        // roll back transaction. In that case we should just wait until
+        // transaction will be committed by recovery mechanism
         repo.beforeCommit(txnId, preparedAppsToCommit)
 
+        var commitError: Throwable? = null
         val commitErrors = HashMap<String, Throwable>()
+        val committedApps = HashSet<String>()
         if (preparedAppsToCommit.isEmpty()) {
             repo.afterCommit(txnId, emptySet(), emptyMap())
         } else {
-            val committedApps = HashSet<String>()
-            var commitError: Throwable? = null
             for (appToCommit in preparedAppsToCommit) {
                 try {
                     remoteClient.commitPrepared(appToCommit, txnId)
@@ -123,14 +136,21 @@ class CommitCoordinatorImpl(
                 }
             }
             repo.afterCommit(txnId, committedApps, commitErrors)
-            if (commitError != null) {
-                throw commitError
-            }
         }
-        if (commitErrors.isEmpty()) {
+        if (commitError == null) {
             actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
+                .finally {
+                    disposeRoot(txnId, txnApps, null)
+                }
+        } else {
+            if (repo != NoopTwoPhaseCommitRepo) {
+                localTransactionsToRecover.add(txnId)
+                disposeRoot(txnId, committedApps, commitError, disposeCurrentApp = false)
+            } else {
+                disposeRoot(txnId, txnApps, null)
+            }
+            throw commitError
         }
-        disposeRoot(txnId, txnApps, null)
     }
 
     override fun rollbackRoot(
@@ -141,7 +161,7 @@ class CommitCoordinatorImpl(
         txnLevel: Int
     ) {
 
-        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentApp) {
+        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentAppName) {
             val coordinatorTxnStatus = remoteClient.getTxnStatus(commitCoordinatorApp, txnId)
             if (coordinatorTxnStatus == TransactionStatus.ROLLED_BACK ||
                 coordinatorTxnStatus == TransactionStatus.NO_TRANSACTION
@@ -167,18 +187,29 @@ class CommitCoordinatorImpl(
             }
         }
 
-        actionsManager.executeActionsAfterRollback(txnId, txnLevel, error, actions)
-
-        disposeRoot(txnId, apps, error)
+        actionsManager.executeActionsAfterRollback(txnId, txnLevel, error, actions).finally {
+            disposeRoot(txnId, apps, error)
+        }
 
         val rollbackTime = System.currentTimeMillis() - catchStartTime
         debug(txnId) { "Rollback executed in $rollbackTime ms" }
     }
 
-    override fun disposeRoot(txnId: TxnId, apps: Collection<String>, mainError: Throwable?) {
+    override fun disposeRoot(
+        txnId: TxnId,
+        apps: Collection<String>,
+        mainError: Throwable?,
+        disposeCurrentApp: Boolean
+    ) {
         log.debug { "[$txnId] Dispose txn for apps $apps" }
-        val appsToDispose = LinkedHashSet<String>(apps)
-        appsToDispose.add(currentApp)
+
+        val appsToDispose = if (disposeCurrentApp) {
+            val appsToDispose = LinkedHashSet<String>(apps)
+            appsToDispose.add(currentAppName)
+            appsToDispose
+        } else {
+            apps
+        }
         for (app in appsToDispose) {
             try {
                 remoteClient.disposeTxn(app, txnId)
@@ -204,50 +235,63 @@ class CommitCoordinatorImpl(
         return res == ApiVersionRes.SUPPORTED
     }
 
-    override fun runTxnRecovering(): Boolean {
+    override fun runTxnRecovering() {
         if (repo == NoopTwoPhaseCommitRepo) {
-            return false
+            return
         }
-        val result = AtomicBoolean()
+        if (localTransactionsToRecover.isNotEmpty()) {
+            val recoveredLocalTransactions = HashSet<TxnId>()
+            for (txnId in localTransactionsToRecover) {
+                if (recoverForData(repo.getRecoveryData(txnId))) {
+                    recoveredLocalTransactions.add(txnId)
+                }
+            }
+            localTransactionsToRecover.removeAll(recoveredLocalTransactions)
+        }
         appLockApi.doInSyncOrSkip("ecos.txn.recovery") {
-            result.set(recoverImpl())
+            var data = repo.findDataToRecover()
+            var iterations = 10
+            while (data != null && --iterations > 0) {
+                recoverForData(data)
+                data = repo.findDataToRecover()
+            }
         }
-        return result.get()
     }
 
-    private fun recoverImpl(): Boolean {
+    private fun recoverForData(recoveryData: RecoveryData?): Boolean {
 
-        log.trace { "Recovering started" }
+        recoveryData ?: return true
 
-        val data = repo.findDataToRecover() ?: return false
-
-        log.info { "Found transactional data to recover: " + Json.mapper.toStringNotNull(data) }
+        log.info { "Begin transaction recovering: " + Json.mapper.toStringNotNull(recoveryData) }
 
         val appsToProc: Set<String>
-        if (data.status == TwoPhaseCommitStatus.PREPARING) {
-            appsToProc = data.data.apps.keys
-            repo.beforeRollback(data.txnId, appsToProc)
+        if (recoveryData.status == TwoPhaseCommitStatus.PREPARING) {
+            appsToProc = recoveryData.data.apps.keys
+            repo.beforeRollback(recoveryData.txnId, appsToProc)
         } else {
-            appsToProc = data.appsToProcess
+            appsToProc = recoveryData.appsToProcess
         }
-        val isCommitting = data.status == TwoPhaseCommitStatus.COMMITTING
+        val isCommitting = recoveryData.status == TwoPhaseCommitStatus.COMMITTING
 
         val processedApps = HashSet<String>()
         val errors = HashMap<String, Throwable>()
+        val aliveAppsInstances = HashSet<String>()
         for (app in appsToProc) {
+            var webReqTargetApp = app
             try {
-                val targetAppInstanceId = data.appRoutes[app]
-                val webReqTargetApp = if (app == currentApp || targetAppInstanceId.isNullOrBlank()) {
-                    app
-                } else {
+                val targetAppInstanceId = recoveryData.appRoutes[app]
+                if (app == currentAppName) {
+                    if (targetAppInstanceId == currentAppInstanceId) {
+                        aliveAppsInstances.add(app)
+                    }
+                } else if (!targetAppInstanceId.isNullOrBlank()) {
                     val instanceFullId = "$app:$targetAppInstanceId"
                     if (remoteClient.isAppAvailable(instanceFullId)) {
-                        instanceFullId
-                    } else {
-                        app
+                        aliveAppsInstances.add(instanceFullId)
+                        webReqTargetApp = instanceFullId
                     }
                 }
-                val xids = data.data.apps[app] ?: emptySet()
+                val xids = recoveryData.data.apps[app] ?: emptySet()
                 if (xids.isNotEmpty()) {
                     when (
                         remoteClient.isApiVersionSupported(
@@ -257,9 +301,9 @@ class CommitCoordinatorImpl(
                     ) {
                         ApiVersionRes.SUPPORTED -> {
                             if (isCommitting) {
-                                remoteClient.recoveryCommit(webReqTargetApp, data.txnId, xids)
+                                remoteClient.recoveryCommit(webReqTargetApp, recoveryData.txnId, xids)
                             } else {
-                                remoteClient.recoveryRollback(webReqTargetApp, data.txnId, xids)
+                                remoteClient.recoveryRollback(webReqTargetApp, recoveryData.txnId, xids)
                             }
                         }
 
@@ -274,59 +318,71 @@ class CommitCoordinatorImpl(
                 }
                 processedApps.add(app)
             } catch (e: Throwable) {
+                aliveAppsInstances.remove(webReqTargetApp)
                 errors[app] = e
                 val actionName = if (isCommitting) {
                     "committing"
                 } else {
                     "rolling back"
                 }
-                log.error(e) { "Error while recovery $actionName of txn ${data.txnId} and app $app" }
+                log.error(e) { "Error while recovery $actionName of txn ${recoveryData.txnId} and app $app" }
             }
         }
 
         if (isCommitting) {
-            repo.afterCommit(data.txnId, processedApps, errors)
+            repo.afterCommit(recoveryData.txnId, processedApps, errors)
         } else {
-            repo.afterRollback(data.txnId, processedApps, errors)
+            repo.afterRollback(recoveryData.txnId, processedApps, errors)
         }
 
-        if (errors.isEmpty()) {
-            // if errors is empty, then everything processed successfully.
-            // Let's try to execute transactional actions for alive apps
-            // if target app is not alive, then action will be skipped
-            val actionsType = if (isCommitting) {
-                TxnActionType.AFTER_COMMIT
-            } else {
-                TxnActionType.AFTER_ROLLBACK
-            }
-            val actions = data.data.actions[actionsType] ?: emptyList()
-            val appRefByName = HashMap<String, String>()
-            val nonAliveApps = HashSet<String>()
-            for (action in actions) {
-                try {
-                    val appRef = appRefByName.computeIfAbsent(action.appName) { name ->
-                        val instanceId = data.appRoutes[action.appName] ?: ""
-                        var appRef = ""
-                        if (instanceId.isNotBlank()) {
-                            appRef = "$name:$instanceId"
-                        }
-                        appRef
+        if (errors.isNotEmpty()) {
+            return false
+        }
+        // if errors is empty, then everything processed successfully.
+        // Let's try to execute transactional actions for alive apps
+        // if target app is not alive, then action will be skipped
+        val actionsType = if (isCommitting) {
+            TxnActionType.AFTER_COMMIT
+        } else {
+            TxnActionType.AFTER_ROLLBACK
+        }
+        val actions = recoveryData.data.actions[actionsType] ?: emptyList()
+        val appRefByName = HashMap<String, String>()
+        val nonAliveApps = HashSet<String>()
+        for (action in actions) {
+            try {
+                val appRef = appRefByName.computeIfAbsent(action.appName) { name ->
+                    val instanceId = recoveryData.appRoutes[action.appName] ?: ""
+                    var appRef = ""
+                    if (instanceId.isNotBlank()) {
+                        appRef = "$name:$instanceId"
                     }
-                    if (appRef.isNotBlank()) {
-                        if (nonAliveApps.contains(appRef) || !remoteClient.isAppAvailable(appRef)) {
-                            log.debug {
-                                "Action $action can't be executed, because target app $appRef is not alive"
-                            }
-                            nonAliveApps.add(appRef)
-                        } else {
-                            actionsManager.executeActionById(data.txnId, actionsType, action.withApp(appRef))
-                        }
-                    }
-                } catch (e: Throwable) {
-                    log.error(e) { "Exception while $actionsType action execution. Action ref: $action" }
+                    appRef
                 }
+                if (appRef.isNotBlank()) {
+                    if (currentAppRef != appRef &&
+                        (nonAliveApps.contains(appRef) || !remoteClient.isAppAvailable(appRef))
+                    ) {
+                        log.debug {
+                            "Action $action can't be executed, because target app $appRef is not alive"
+                        }
+                        nonAliveApps.add(appRef)
+                    } else {
+                        val actionToExec = if (currentAppRef == appRef) {
+                            aliveAppsInstances.add(action.appName)
+                            action
+                        } else {
+                            aliveAppsInstances.add(appRef)
+                            action.withApp(appRef)
+                        }
+                        actionsManager.executeActionById(recoveryData.txnId, actionsType, actionToExec)
+                    }
+                }
+            } catch (e: Throwable) {
+                log.error(e) { "Exception while $actionsType action execution. Action ref: $action" }
             }
         }
+        disposeRoot(recoveryData.txnId, aliveAppsInstances, null, false)
         return true
     }
 

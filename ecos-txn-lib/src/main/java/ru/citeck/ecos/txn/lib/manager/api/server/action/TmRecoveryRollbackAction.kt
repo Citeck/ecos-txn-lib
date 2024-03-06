@@ -10,12 +10,7 @@ class TmRecoveryRollbackAction : AbstractTmRemoteAction<TmRecoveryRollbackAction
     }
 
     override fun execute(data: Data, apiVer: Int) {
-        val txn = manager.getManagedTransactionOrNull(data.txnId)
-        if (txn != null) {
-            txn.rollback(null)
-        } else {
-            manager.getRecoveryManager().rollbackPrepared(data.xids)
-        }
+        manager.recoveryRollback(data.txnId, data.xids)
     }
 
     override fun getType(): String {

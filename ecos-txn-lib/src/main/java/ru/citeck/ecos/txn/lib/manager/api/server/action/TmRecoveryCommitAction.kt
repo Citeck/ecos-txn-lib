@@ -10,12 +10,7 @@ class TmRecoveryCommitAction : AbstractTmRemoteAction<TmRecoveryCommitAction.Dat
     }
 
     override fun execute(data: Data, apiVer: Int) {
-        val txn = manager.getManagedTransactionOrNull(data.txnId)
-        if (txn != null) {
-            txn.commitPrepared()
-        } else {
-            manager.getRecoveryManager().commitPrepared(data.xids)
-        }
+        manager.recoveryCommit(data.txnId, data.xids)
     }
 
     override fun getType(): String {

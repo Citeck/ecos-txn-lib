@@ -4,12 +4,12 @@ import mu.KotlinLogging
 import ru.citeck.ecos.commons.data.DataValue
 import ru.citeck.ecos.commons.utils.ReflectUtils
 import ru.citeck.ecos.micrometer.EcosMicrometerContext
-import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
+import ru.citeck.ecos.txn.lib.manager.TransactionManager
 import ru.citeck.ecos.txn.lib.manager.api.server.action.*
 import java.util.concurrent.ConcurrentHashMap
 
 class TxnManagerRemoteActions(
-    private val manager: TransactionManagerImpl,
+    private val manager: TransactionManager,
     private val micrometerContext: EcosMicrometerContext = EcosMicrometerContext.NOOP
 ) {
     companion object {

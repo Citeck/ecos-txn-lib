@@ -16,5 +16,7 @@ interface TwoPhaseCommitRepo {
 
     fun afterRollback(txnId: TxnId, rolledBackApps: Set<String>, errors: Map<String, Throwable>)
 
+    fun getRecoveryData(txnId: TxnId): RecoveryData?
+
     fun findDataToRecover(): RecoveryData?
 }

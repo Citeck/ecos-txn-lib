@@ -83,14 +83,18 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
             if (txnInfo.lastAliveTime < lastActiveTime) {
                 txnInfo.lastAliveTime = lastActiveTime
             }
-            if (txnInfo.lastAliveTime < prevHealthCheckTime && txnId.appName != currentAppName) {
-                val appRef = txnId.appName + ":" + txnId.appInstanceId
-                if (remoteClient.isAppAvailable(appRef)) {
+            if (txnInfo.lastAliveTime < prevHealthCheckTime &&
+                (txnId.appName != currentAppName || txnInfo.commitDelegatedToApp.isNotEmpty())
+            ) {
+                val txnManagerApp = txnInfo.commitDelegatedToApp.ifEmpty {
+                    txnId.appName + ":" + txnId.appInstanceId
+                }
+                if (remoteClient.isAppAvailable(txnManagerApp)) {
                     try {
-                        val status = remoteClient.getTxnStatus(appRef, txnId)
+                        val status = remoteClient.getTxnStatus(txnManagerApp, txnId)
                         if (status == TransactionStatus.NO_TRANSACTION) {
                             log.warn {
-                                "[$txnId] Remote app $appRef returned 'NO_TRANSACTION' " +
+                                "[$txnId] Remote app $txnManagerApp returned 'NO_TRANSACTION' " +
                                     "but transaction is still exists in this instance. " +
                                     "Local status: ${txnInfo.transaction.getStatus()}"
                             }
@@ -104,7 +108,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
                 }
             }
             if (txnInfo.lastAliveTime < nonAliveTime) {
-                log.info { "[$txnId] Dispose stuck transaction" }
+                log.warn { "[$txnId] Dispose stuck transaction" }
                 try {
                     manager.dispose(txnId)
                 } catch (e: Throwable) {

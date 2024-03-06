@@ -17,4 +17,6 @@ object NoopTwoPhaseCommitRepo : TwoPhaseCommitRepo {
     override fun afterRollback(txnId: TxnId, rolledBackApps: Set<String>, errors: Map<String, Throwable>) {}
 
     override fun findDataToRecover(): RecoveryData? = null
+
+    override fun getRecoveryData(txnId: TxnId): RecoveryData? = null
 }
