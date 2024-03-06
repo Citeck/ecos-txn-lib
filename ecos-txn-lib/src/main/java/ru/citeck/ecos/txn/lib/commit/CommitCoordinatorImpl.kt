@@ -187,9 +187,8 @@ class CommitCoordinatorImpl(
             }
         }
 
-        actionsManager.executeActionsAfterRollback(txnId, txnLevel, error, actions).finally {
-            disposeRoot(txnId, apps, error)
-        }
+        actionsManager.executeActionsAfterRollback(txnId, txnLevel, error, actions)
+        disposeRoot(txnId, apps, error)
 
         val rollbackTime = System.currentTimeMillis() - catchStartTime
         debug(txnId) { "Rollback executed in $rollbackTime ms" }

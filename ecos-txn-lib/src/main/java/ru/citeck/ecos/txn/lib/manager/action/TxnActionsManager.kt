@@ -46,25 +46,26 @@ class TxnActionsManager(
         txnLevel: Int,
         mainError: Throwable,
         actions: List<TxnActionId>?
-    ): Promise<Unit> {
+    ) {
+        // after rollback actions usually used to revert invalid state
+        // and should be executed in caller thread.
+        // runActionsInTaskExecutor should not be used
         if (actions.isNullOrEmpty()) {
-            return Promises.resolve(Unit)
+            return
         }
-        return runActionsInTaskExecutor(txnId, TxnActionType.AFTER_ROLLBACK) {
-            executeActionsImpl(txnId, TxnActionType.AFTER_ROLLBACK) {
-                actions.forEach { actionId ->
-                    try {
-                        manager.doInNewTxn(false, txnLevel + 1) {
-                            executeActionById(txnId, TxnActionType.AFTER_ROLLBACK, actionId)
-                        }
-                    } catch (afterRollbackActionErr: Throwable) {
-                        mainError.addSuppressed(
-                            RuntimeException(
-                                "[$txnId] After rollback action execution error. Id: $actionId",
-                                afterRollbackActionErr
-                            )
-                        )
+        return executeActionsImpl(txnId, TxnActionType.AFTER_ROLLBACK) {
+            actions.forEach { actionId ->
+                try {
+                    manager.doInNewTxn(false, txnLevel + 1) {
+                        executeActionById(txnId, TxnActionType.AFTER_ROLLBACK, actionId)
                     }
+                } catch (afterRollbackActionErr: Throwable) {
+                    mainError.addSuppressed(
+                        RuntimeException(
+                            "[$txnId] After rollback action execution error. Id: $actionId",
+                            afterRollbackActionErr
+                        )
+                    )
                 }
             }
         }
