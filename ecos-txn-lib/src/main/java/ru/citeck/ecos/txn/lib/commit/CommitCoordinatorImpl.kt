@@ -49,7 +49,7 @@ class CommitCoordinatorImpl(
 
         if (data.apps.size == 1) {
             val appEntry = data.apps.entries.first()
-            if (appEntry.value.size == 1) {
+            if (appEntry.value.size <= 1) {
                 val appToCommit = appEntry.key
                 commitObservation.observe {
                     remoteClient.onePhaseCommit(appToCommit, txnId)
