@@ -164,14 +164,19 @@ class CommitCoordinatorImpl(
         txnLevel: Int
     ) {
 
-        if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentAppName) {
-            val coordinatorTxnStatus = remoteClient.getTxnStatus(commitCoordinatorApp, txnId)
-            if (coordinatorTxnStatus == TransactionStatus.ROLLED_BACK ||
-                coordinatorTxnStatus == TransactionStatus.NO_TRANSACTION
-            ) {
-                // already rolled back by coordinator
-                manager.dispose(txnId)
-                return
+        val commitDelegator = manager.transactionsById[txnId]?.commitDelegatedToApp ?: ""
+        if (commitDelegator.isNotBlank()) {
+            try {
+                val coordinatorTxnStatus = remoteClient.getTxnStatus(commitDelegator, txnId)
+                if (coordinatorTxnStatus == TransactionStatus.ROLLED_BACK ||
+                    coordinatorTxnStatus == TransactionStatus.NO_TRANSACTION
+                ) {
+                    // already rolled back by coordinator
+                    manager.dispose(txnId)
+                    return
+                }
+            } catch (e: Throwable) {
+                error.addSuppressed(e)
             }
         }
 
