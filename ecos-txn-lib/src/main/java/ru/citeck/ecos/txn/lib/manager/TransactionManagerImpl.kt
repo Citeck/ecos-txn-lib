@@ -17,6 +17,7 @@ import ru.citeck.ecos.txn.lib.manager.action.TxnActionsManager
 import ru.citeck.ecos.txn.lib.manager.api.client.CurrentAppClientWrapper
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerWebApiClient
+import ru.citeck.ecos.txn.lib.manager.obs.TxnActionObsContext
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManager
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManagerImpl
 import ru.citeck.ecos.txn.lib.manager.work.AlwaysStatelessExtTxnWorkContext
@@ -230,8 +231,9 @@ class TransactionManagerImpl : TransactionManager {
                 transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
 
-                val txnActionObservation = micrometerContext.createObservation("ecos.txn.action")
-                    .highCardinalityKeyValue("txnId") { newTxnId.toString() }
+                val txnActionObservation = micrometerContext.createObs(
+                    TxnActionObsContext(newTxnId, this)
+                )
 
                 val actionRes = txnActionObservation.observe { action.invoke() }
 

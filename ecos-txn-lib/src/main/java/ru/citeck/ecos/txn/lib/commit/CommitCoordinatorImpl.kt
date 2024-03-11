@@ -4,6 +4,8 @@ import mu.KotlinLogging
 import ru.citeck.ecos.commons.json.Json
 import ru.citeck.ecos.txn.lib.action.TxnActionId
 import ru.citeck.ecos.txn.lib.action.TxnActionType
+import ru.citeck.ecos.txn.lib.commit.obs.TxnCommitObsContext
+import ru.citeck.ecos.txn.lib.commit.obs.TxnRollbackObsContext
 import ru.citeck.ecos.txn.lib.commit.repo.NoopTwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitStatus
@@ -41,9 +43,9 @@ class CommitCoordinatorImpl(
             return
         }
 
-        val commitObservation = micrometerContext.createObservation("ecos.txn.commit")
-            .highCardinalityKeyValue("txnId") { txnId.toString() }
-            .highCardinalityKeyValue("apps") { data.apps.keys.joinToString(",") }
+        val commitObservation = micrometerContext.createObs(
+            TxnCommitObsContext(txnId, data, txnLevel, manager)
+        )
 
         if (data.apps.size == 1) {
             val appEntry = data.apps.entries.first()
@@ -173,8 +175,16 @@ class CommitCoordinatorImpl(
             }
         }
 
-        val rollbackObservation = micrometerContext.createObservation("ecos.txn.rollback")
-            .highCardinalityKeyValue("txnId", txnId.toString())
+        val rollbackObservation = micrometerContext.createObs(
+            TxnRollbackObsContext(
+                txnId,
+                apps,
+                actions ?: emptyList(),
+                error,
+                txnLevel,
+                manager
+            )
+        )
 
         val catchStartTime = System.currentTimeMillis()
         rollbackObservation.observe {

@@ -5,6 +5,7 @@ import ru.citeck.ecos.commons.promise.Promises
 import ru.citeck.ecos.txn.lib.action.TxnActionId
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
+import ru.citeck.ecos.txn.lib.manager.action.obs.TxnActionsObsContext
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.webapp.api.promise.Promise
 import java.util.concurrent.CompletableFuture
@@ -75,10 +76,9 @@ class TxnActionsManager(
 
         val startTime = System.currentTimeMillis()
 
-        val observation = manager.micrometerContext.createObservation(type.observationId)
-            .highCardinalityKeyValue("txnId") { txnId.toString() }
-
-        observation.observe {
+        manager.micrometerContext.createObs(
+            TxnActionsObsContext(txnId, type, manager)
+        ).observe {
             executeActions.invoke()
         }
 

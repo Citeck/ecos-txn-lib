@@ -6,6 +6,7 @@ import ru.citeck.ecos.commons.utils.ReflectUtils
 import ru.citeck.ecos.micrometer.EcosMicrometerContext
 import ru.citeck.ecos.txn.lib.manager.TransactionManager
 import ru.citeck.ecos.txn.lib.manager.api.server.action.*
+import ru.citeck.ecos.txn.lib.manager.api.server.obs.TxnExtActionObsContext
 import java.util.concurrent.ConcurrentHashMap
 
 class TxnManagerRemoteActions(
@@ -36,15 +37,7 @@ class TxnManagerRemoteActions(
 
         log.debug { "Execute remote action $type with data $data apiVer: $apiVer" }
 
-        val observation = micrometerContext.createObservation("ecos.txn.external-action")
-            .highCardinalityKeyValue("type", type)
-
-        if (data.has("txnId")) {
-            observation.highCardinalityKeyValue("txnId", data["txnId"].asText())
-        }
-        if (data.has("xids")) {
-            observation.highCardinalityKeyValue("xids", data["xids"].toString())
-        }
+        val observation = micrometerContext.createObs(TxnExtActionObsContext(type, data, apiVer))
 
         val res = observation.observe {
             action.action.execute(data.getAsNotNull(action.dataType), apiVer)
