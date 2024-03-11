@@ -159,7 +159,7 @@ class TransactionManagerImpl : TransactionManager {
 
         val transaction = transactionsById.computeIfAbsent(extTxnId) {
             isNewLocalTxn = true
-            val txn = TransactionImpl(it, webAppProps.appName, readOnly)
+            val txn = TransactionImpl(it, webAppProps.appName, readOnly, micrometerContext)
             txn.start()
             TransactionInfo(txn)
         }.transaction
@@ -207,7 +207,7 @@ class TransactionManagerImpl : TransactionManager {
         if (txnLevel >= 10) {
             error("Transaction actions level overflow error")
         }
-        val transaction = TransactionImpl(newTxnId, webAppProps.appName, readOnly)
+        val transaction = TransactionImpl(newTxnId, webAppProps.appName, readOnly, micrometerContext)
 
         val actions = TxnActionsContainer(newTxnId, this)
         val xidsByApp = LinkedHashMap<String, MutableSet<EcosXid>>()

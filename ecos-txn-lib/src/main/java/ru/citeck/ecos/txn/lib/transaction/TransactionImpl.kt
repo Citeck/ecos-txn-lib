@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.transaction
 
 import mu.KotlinLogging
+import ru.citeck.ecos.micrometer.EcosMicrometerContext
 import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.action.TxnActionRef
 import ru.citeck.ecos.txn.lib.action.TxnActionType
@@ -8,6 +9,7 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.ctx.EmptyTxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
+import ru.citeck.ecos.txn.lib.transaction.obs.EcosTxnSyncObsContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.lang.RuntimeException
 import java.time.Instant
@@ -21,7 +23,8 @@ import kotlin.collections.LinkedHashMap
 class TransactionImpl(
     private val txnId: TxnId,
     private val currentAppName: String,
-    initialReadOnly: Boolean
+    initialReadOnly: Boolean,
+    private val micrometerContext: EcosMicrometerContext
 ) : ManagedTransaction {
 
     companion object {
@@ -333,6 +336,7 @@ class TransactionImpl(
     private inline fun logError(e: Throwable, crossinline msg: () -> String) {
         log.error(e) { getTxnForLog() + msg.invoke() }
     }
+
     private inline fun logError(crossinline msg: () -> String) {
         log.error { getTxnForLog() + msg.invoke() }
     }
@@ -356,18 +360,26 @@ class TransactionImpl(
         }
         updateLastActiveTime()
         if (newStatus == TransactionStatus.PREPARING || newStatus == TransactionStatus.COMMITTING) {
-            synchronizations.forEach {
-                it.beforeCompletion()
+            micrometerContext.createObs(
+                EcosTxnSyncObsContext.BeforeCompletion(synchronizations, this)
+            ).observe {
+                synchronizations.forEach {
+                    it.beforeCompletion()
+                }
             }
         }
         logDebug { "Update status ${this.txnStatus} -> $newStatus" }
         this.txnStatus = newStatus
         if (this.txnStatus == TransactionStatus.ROLLED_BACK || this.txnStatus == TransactionStatus.COMMITTED) {
-            synchronizations.forEach {
-                try {
-                    it.afterCompletion(this.txnStatus)
-                } catch (e: Throwable) {
-                    logError(e) { "Exception in sync.afterCompletion call" }
+            micrometerContext.createObs(
+                EcosTxnSyncObsContext.AfterCompletion(synchronizations, this)
+            ).observe {
+                synchronizations.forEach {
+                    try {
+                        it.afterCompletion(this.txnStatus)
+                    } catch (e: Throwable) {
+                        logError(e) { "Exception in sync.afterCompletion call" }
+                    }
                 }
             }
         }
@@ -400,6 +412,7 @@ class TransactionImpl(
         return when (this.txnStatus) {
             TransactionStatus.ROLLED_BACK,
             TransactionStatus.COMMITTED -> true
+
             else -> false
         }
     }
