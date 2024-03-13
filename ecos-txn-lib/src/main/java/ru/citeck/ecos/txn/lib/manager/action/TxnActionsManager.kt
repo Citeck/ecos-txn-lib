@@ -9,9 +9,10 @@ import ru.citeck.ecos.txn.lib.manager.action.obs.TxnActionsObsContext
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.webapp.api.promise.Promise
 import java.util.concurrent.CompletableFuture
+import kotlin.system.measureTimeMillis
 
 class TxnActionsManager(
-    private val manager: TransactionManagerImpl
+    val manager: TransactionManagerImpl
 ) {
 
     companion object {
@@ -26,16 +27,14 @@ class TxnActionsManager(
             return Promises.resolve(Unit)
         }
         return runActionsInTaskExecutor(txnId, TxnActionType.AFTER_COMMIT) {
-            executeActionsImpl(txnId, TxnActionType.AFTER_COMMIT) {
-                actions.forEach { actionId ->
-                    try {
-                        manager.doInNewTxn(false, txnLevel + 1) {
-                            executeActionById(txnId, TxnActionType.AFTER_COMMIT, actionId)
-                        }
-                    } catch (mainError: Throwable) {
-                        log.error(mainError) {
-                            "After commit action execution error. Id: $actionId"
-                        }
+            executeActions(txnId, TxnActionType.AFTER_COMMIT, actions) { actionId ->
+                try {
+                    manager.doInNewTxn(false, txnLevel + 1) {
+                        executeActionById(txnId, TxnActionType.AFTER_COMMIT, actionId)
+                    }
+                } catch (mainError: Throwable) {
+                    log.error(mainError) {
+                        "After commit action execution error. Id: $actionId"
                     }
                 }
             }
@@ -51,35 +50,42 @@ class TxnActionsManager(
         // after rollback actions usually used to revert invalid state
         // and should be executed in caller thread.
         // runActionsInTaskExecutor should not be used
-        if (actions.isNullOrEmpty()) {
-            return
-        }
-        return executeActionsImpl(txnId, TxnActionType.AFTER_ROLLBACK) {
-            actions.forEach { actionId ->
-                try {
-                    manager.doInNewTxn(false, txnLevel + 1) {
-                        executeActionById(txnId, TxnActionType.AFTER_ROLLBACK, actionId)
-                    }
-                } catch (afterRollbackActionErr: Throwable) {
-                    mainError.addSuppressed(
-                        RuntimeException(
-                            "[$txnId] After rollback action execution error. Id: $actionId",
-                            afterRollbackActionErr
-                        )
-                    )
+        executeActions(txnId, TxnActionType.AFTER_ROLLBACK, actions) { actionId ->
+            try {
+                manager.doInNewTxn(false, txnLevel + 1) {
+                    executeActionById(txnId, TxnActionType.AFTER_ROLLBACK, actionId)
                 }
+            } catch (afterRollbackActionErr: Throwable) {
+                mainError.addSuppressed(
+                    RuntimeException(
+                        "[$txnId] After rollback action execution error. Id: $actionId",
+                        afterRollbackActionErr
+                    )
+                )
             }
         }
     }
 
-    private inline fun executeActionsImpl(txnId: TxnId, type: TxnActionType, crossinline executeActions: () -> Unit) {
-
+    internal inline fun executeActions(
+        txnId: TxnId,
+        type: TxnActionType,
+        actions: List<TxnActionId>?,
+        crossinline execAction: (TxnActionId) -> Unit
+    ) {
+        if (actions.isNullOrEmpty()) {
+            return
+        }
         val startTime = System.currentTimeMillis()
 
-        manager.micrometerContext.createObs(
-            TxnActionsObsContext(txnId, type, manager)
-        ).observe {
-            executeActions.invoke()
+        val obsCtx = TxnActionsObsContext(txnId, type, manager, actions)
+        val actionsTime = HashMap<TxnActionId, Long>()
+        manager.micrometerContext.createObs(obsCtx).observe {
+            actions.forEach {
+                actionsTime[it] = measureTimeMillis {
+                    execAction.invoke(it)
+                }
+            }
+            obsCtx.actionsTime = actionsTime
         }
 
         val totalTime = System.currentTimeMillis() - startTime

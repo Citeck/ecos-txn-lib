@@ -28,8 +28,13 @@ class TxnActionsContainer(
     }
 
     fun executeBeforeCommitActions() {
-        actions[TxnActionType.BEFORE_COMMIT]?.forEach {
-            actionsManager.executeActionById(txnId, TxnActionType.BEFORE_COMMIT, it.ref.getGlobalId())
+        val actions = actions[TxnActionType.BEFORE_COMMIT] ?: return
+        actionsManager.executeActions(
+            txnId,
+            TxnActionType.BEFORE_COMMIT,
+            actions.map { it.ref.getGlobalId() }
+        ) { actionId ->
+            actionsManager.executeActionById(txnId, TxnActionType.BEFORE_COMMIT, actionId)
         }
     }
 
