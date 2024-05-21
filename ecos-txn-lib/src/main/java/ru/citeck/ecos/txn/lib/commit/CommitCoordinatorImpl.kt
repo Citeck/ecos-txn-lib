@@ -82,7 +82,8 @@ class CommitCoordinatorImpl(
         repo.beforePrepare(txnId, data)
 
         val preparedAppsToCommit = HashSet<String>()
-        for (app in txnApps) {
+        // new set to protect against ConcurrentModificationException
+        for (app in LinkedHashSet(txnApps)) {
             try {
                 if (data.apps.containsKey(app)) {
                     val xids = remoteClient.prepareCommit(app, txnId)
