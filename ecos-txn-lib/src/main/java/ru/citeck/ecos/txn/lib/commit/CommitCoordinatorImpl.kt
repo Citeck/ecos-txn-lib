@@ -82,8 +82,10 @@ class CommitCoordinatorImpl(
         repo.beforePrepare(txnId, data)
 
         val preparedAppsToCommit = HashSet<String>()
-        // new set to protect against ConcurrentModificationException
-        for (app in LinkedHashSet(txnApps)) {
+
+        val txnAppsIt = txnApps.iterator()
+        while (txnAppsIt.hasNext()) {
+            val app = txnAppsIt.next()
             try {
                 if (data.apps.containsKey(app)) {
                     val xids = remoteClient.prepareCommit(app, txnId)
@@ -91,7 +93,7 @@ class CommitCoordinatorImpl(
                         preparedAppsToCommit.add(app)
                     } else {
                         // if app answered 'NOTHING TO COMMIT', then rollback and disposing is not required
-                        txnApps.remove(app)
+                        txnAppsIt.remove()
                     }
                 } else {
                     // app without txn resources
