@@ -63,10 +63,9 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
         if (transactionsById.isEmpty()) {
             return
         }
-        val transactionIds = transactionsById.keys.toList()
         val prevHealthCheckTime = System.currentTimeMillis() - HEALTH_CHECK_PERIOD_MS
         val nonAliveTime = System.currentTimeMillis() - MAX_NON_ALIVE_TIME_MS
-        for (txnId in transactionIds) {
+        for (txnId in transactionsById.keys) {
             val txnInfo = transactionsById[txnId] ?: continue
             if (
                 txnInfo.managerCanRecoverPreparedTxn &&
