@@ -1,7 +1,7 @@
 package ru.citeck.ecos.txn.lib.transaction
 
-import ecos.com.fasterxml.jackson210.annotation.JsonCreator
-import ecos.com.fasterxml.jackson210.annotation.JsonValue
+import com.fasterxml.jackson.annotation.JsonCreator
+import com.fasterxml.jackson.annotation.JsonValue
 import ru.citeck.ecos.commons.utils.NameUtils
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong

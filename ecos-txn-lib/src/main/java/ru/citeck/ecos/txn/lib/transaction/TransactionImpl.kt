@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.transaction
 
-import mu.KotlinLogging
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.micrometer.EcosMicrometerContext
 import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.action.TxnActionRef

@@ -1,13 +1,13 @@
 package ru.citeck.ecos.txn.lib.resource.type.xa
 
+import jakarta.transaction.Status
+import jakarta.transaction.Synchronization
+import jakarta.transaction.Transaction
+import jakarta.transaction.TransactionManager
 import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.webapp.api.properties.EcosWebAppProps
-import javax.transaction.Status
-import javax.transaction.Synchronization
-import javax.transaction.Transaction
-import javax.transaction.TransactionManager
 import javax.transaction.xa.XAResource
 
 class JavaXaTxnManagerAdapter(val props: EcosWebAppProps) : TransactionManager {

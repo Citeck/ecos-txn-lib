@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.manager
 
-import mu.KotlinLogging
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import java.util.concurrent.atomic.AtomicBoolean

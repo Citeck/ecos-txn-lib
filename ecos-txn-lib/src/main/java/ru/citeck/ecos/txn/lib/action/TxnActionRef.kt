@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.action
 
-import ecos.com.fasterxml.jackson210.annotation.JsonIgnore
+import com.fasterxml.jackson.annotation.JsonIgnore
 
 data class TxnActionRef(
     val appName: String,

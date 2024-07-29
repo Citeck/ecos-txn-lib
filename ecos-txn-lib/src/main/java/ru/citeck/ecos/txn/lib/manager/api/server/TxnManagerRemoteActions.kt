@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.manager.api.server
 
-import mu.KotlinLogging
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.commons.data.DataValue
 import ru.citeck.ecos.commons.utils.ReflectUtils
 import ru.citeck.ecos.micrometer.EcosMicrometerContext

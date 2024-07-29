@@ -1,12 +1,12 @@
 package ru.citeck.ecos.txn.lib.transaction.xid
 
-import ecos.com.fasterxml.jackson210.core.JsonGenerator
-import ecos.com.fasterxml.jackson210.core.JsonParser
-import ecos.com.fasterxml.jackson210.core.JsonToken
-import ecos.com.fasterxml.jackson210.databind.DeserializationContext
-import ecos.com.fasterxml.jackson210.databind.SerializerProvider
-import ecos.com.fasterxml.jackson210.databind.deser.std.StdDeserializer
-import ecos.com.fasterxml.jackson210.databind.ser.std.StdSerializer
+import com.fasterxml.jackson.core.JsonGenerator
+import com.fasterxml.jackson.core.JsonParser
+import com.fasterxml.jackson.core.JsonToken
+import com.fasterxml.jackson.databind.DeserializationContext
+import com.fasterxml.jackson.databind.SerializerProvider
+import com.fasterxml.jackson.databind.deser.std.StdDeserializer
+import com.fasterxml.jackson.databind.ser.std.StdSerializer
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 
 class TxnXidSerializer : StdSerializer<EcosXid>(EcosXid::class.java) {

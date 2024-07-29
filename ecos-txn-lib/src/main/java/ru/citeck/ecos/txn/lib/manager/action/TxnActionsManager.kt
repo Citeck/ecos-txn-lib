@@ -1,13 +1,13 @@
 package ru.citeck.ecos.txn.lib.manager.action
 
-import mu.KotlinLogging
-import ru.citeck.ecos.commons.promise.Promises
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.txn.lib.action.TxnActionId
 import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.manager.action.obs.TxnActionsObsContext
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.webapp.api.promise.Promise
+import ru.citeck.ecos.webapp.api.promise.Promises
 import java.util.concurrent.CompletableFuture
 import kotlin.system.measureTimeMillis
 

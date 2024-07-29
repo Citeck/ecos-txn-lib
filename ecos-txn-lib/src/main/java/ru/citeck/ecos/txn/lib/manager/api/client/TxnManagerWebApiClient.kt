@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.manager.api.client
 
-import mu.KotlinLogging
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
 import ru.citeck.ecos.txn.lib.manager.api.server.TxnManagerWebExecutor

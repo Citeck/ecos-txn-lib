@@ -14,14 +14,14 @@
     </parent>
 
     <properties>
-        <javax.jta.version>1.1</javax.jta.version>
+        <javax.jta.version>2.0.1</javax.jta.version>
     </properties>
 
     <dependencies>
 
         <dependency>
-            <groupId>javax.transaction</groupId>
-            <artifactId>jta</artifactId>
+            <groupId>jakarta.transaction</groupId>
+            <artifactId>jakarta.transaction-api</artifactId>
             <version>${javax.jta.version}</version>
             <scope>provided</scope>
         </dependency>
@@ -32,13 +32,13 @@
         <plugins>
 
             <plugin>
-                <groupId>org.jetbrains.kotlin</groupId>
-                <artifactId>kotlin-maven-plugin</artifactId>
+                <groupId>com.github.gantsign.maven</groupId>
+                <artifactId>ktlint-maven-plugin</artifactId>
             </plugin>
 
             <plugin>
-                <groupId>com.github.gantsign.maven</groupId>
-                <artifactId>ktlint-maven-plugin</artifactId>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
             </plugin>
 
             <plugin>

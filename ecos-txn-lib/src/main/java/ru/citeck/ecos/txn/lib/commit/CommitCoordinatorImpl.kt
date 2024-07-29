@@ -1,6 +1,6 @@
 package ru.citeck.ecos.txn.lib.commit
 
-import mu.KotlinLogging
+import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.commons.json.Json
 import ru.citeck.ecos.txn.lib.action.TxnActionId
 import ru.citeck.ecos.txn.lib.action.TxnActionType
