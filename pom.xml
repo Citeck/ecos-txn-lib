@@ -71,4 +71,11 @@
         <module>ecos-txn-lib</module>
     </modules>
 
+    <repositories>
+        <repository>
+            <id>citeck-public</id>
+            <url>https://nexus.citeck.ru/repository/maven-public</url>
+        </repository>
+    </repositories>
+
 </project>
