@@ -11,10 +11,21 @@ class CurrentAppClientWrapper(
     private val manager: TransactionManagerImpl
 ) : TxnManagerRemoteApiClient {
 
-    private val currentApp = manager.webAppApi.getProperties().appName
+    private val currAppName: String
+    private val currAppRef: String
+
+    init {
+        val appProps = manager.webAppApi.getProperties()
+        currAppName = appProps.appName
+        currAppRef = currAppName + ":" + appProps.appInstanceId
+    }
+
+    private fun isCurrentApp(app: String): Boolean {
+        return app == currAppName || app == currAppRef
+    }
 
     override fun rollback(app: String, txnId: TxnId, cause: Throwable?) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.getManagedTransaction(txnId).rollback(cause)
         } else {
             impl.rollback(app, txnId, cause)
@@ -22,14 +33,14 @@ class CurrentAppClientWrapper(
     }
 
     override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             error("Commit coordination can't be called for current app")
         }
         impl.coordinateCommit(app, txnId, data, txnLevel)
     }
 
     override fun onePhaseCommit(app: String, txnId: TxnId) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.getManagedTransaction(txnId).onePhaseCommit()
         } else {
             impl.onePhaseCommit(app, txnId)
@@ -37,7 +48,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun disposeTxn(app: String, txnId: TxnId) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.dispose(txnId)
         } else {
             impl.disposeTxn(app, txnId)
@@ -45,7 +56,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun prepareCommit(app: String, txnId: TxnId): List<EcosXid> {
-        return if (app == currentApp) {
+        return if (isCurrentApp(app)) {
             manager.prepareCommitFromExtManager(txnId, true)
         } else {
             impl.prepareCommit(app, txnId)
@@ -53,7 +64,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun commitPrepared(app: String, txnId: TxnId) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.getManagedTransaction(txnId).commitPrepared()
         } else {
             impl.commitPrepared(app, txnId)
@@ -61,7 +72,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.recoveryCommit(txnId, xids)
         } else {
             impl.recoveryCommit(app, txnId, xids)
@@ -69,7 +80,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.recoveryRollback(txnId, xids)
         } else {
             impl.recoveryRollback(app, txnId, xids)
@@ -77,7 +88,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun getTxnStatus(app: String, txnId: TxnId): TransactionStatus {
-        return if (app == currentApp) {
+        return if (isCurrentApp(app)) {
             manager.getTransactionOrNull(txnId)?.getStatus() ?: TransactionStatus.NO_TRANSACTION
         } else {
             impl.getTxnStatus(app, txnId)
@@ -85,7 +96,7 @@ class CurrentAppClientWrapper(
     }
 
     override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             manager.getManagedTransaction(txnId).executeAction(actionId)
         } else {
             impl.executeTxnAction(app, txnId, actionId)
@@ -93,14 +104,14 @@ class CurrentAppClientWrapper(
     }
 
     override fun isApiVersionSupported(app: String, version: Int): ApiVersionRes {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             return ApiVersionRes.SUPPORTED
         }
         return impl.isApiVersionSupported(app, version)
     }
 
     override fun isAppAvailable(app: String): Boolean {
-        if (app == currentApp) {
+        if (isCurrentApp(app)) {
             return true
         }
         return impl.isAppAvailable(app)

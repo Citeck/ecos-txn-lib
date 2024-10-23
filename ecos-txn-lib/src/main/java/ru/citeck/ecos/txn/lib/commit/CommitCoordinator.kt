@@ -64,4 +64,3 @@ interface CommitCoordinator {
      */
     fun runTxnRecovering()
 }
-

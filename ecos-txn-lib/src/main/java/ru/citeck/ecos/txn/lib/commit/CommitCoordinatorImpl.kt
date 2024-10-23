@@ -267,11 +267,23 @@ class CommitCoordinatorImpl(
             localTransactionsToRecover.removeAll(recoveredLocalTransactions)
         }
         appLockApi.doInSyncOrSkip("ecos.txn.recovery") {
-            var data = repo.findDataToRecover()
-            var iterations = 10
-            while (data != null && --iterations > 0) {
-                recoverForData(data)
-                data = repo.findDataToRecover()
+            var data = repo.findDataToRecover(emptyList())
+            if (data != null) {
+                val exclusions = ArrayList<TxnId>()
+                var iterations = 10
+                while (data != null && --iterations > 0) {
+                    while (data != null && manager.transactionsById.containsKey(data.txnId)) {
+                        if (exclusions.size == 20) {
+                            data = null
+                            break
+                        }
+                        exclusions.add(data.txnId)
+                        data = repo.findDataToRecover(exclusions)
+                    }
+                    data ?: break
+                    recoverForData(data)
+                    data = repo.findDataToRecover(exclusions)
+                }
             }
         }
     }

@@ -77,7 +77,9 @@ interface TwoPhaseCommitRepo {
      * Finds data for transactions that are eligible for recovery.
      * This method is used to discover transactions that require recovery after a transaction manager failure.
      *
+     * @param exclusions list of transactions which should be excluded from recovery data search
+     *
      * @return Recovery data for a transaction that needs recovery, or `null` if no such data is found.
      */
-    fun findDataToRecover(): RecoveryData?
+    fun findDataToRecover(exclusions: List<TxnId>): RecoveryData?
 }
