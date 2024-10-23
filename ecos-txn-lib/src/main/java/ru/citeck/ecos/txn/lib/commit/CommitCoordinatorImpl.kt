@@ -266,24 +266,35 @@ class CommitCoordinatorImpl(
             }
             localTransactionsToRecover.removeAll(recoveredLocalTransactions)
         }
-        appLockApi.doInSyncOrSkip("ecos.txn.recovery") {
-            var data = repo.findDataToRecover(emptyList())
-            if (data != null) {
-                val exclusions = ArrayList<TxnId>()
-                var iterations = 10
-                while (data != null && --iterations > 0) {
-                    while (data != null && manager.transactionsById.containsKey(data.txnId)) {
-                        if (exclusions.size == 20) {
-                            data = null
-                            break
-                        }
-                        exclusions.add(data.txnId)
-                        data = repo.findDataToRecover(exclusions)
+
+        // recover transactions owned by current app
+        var data = repo.findOwnDataToRecover(emptyList())
+        if (data != null) {
+            val exclusions = ArrayList<TxnId>()
+            var iterations = 10
+            while (data != null && --iterations > 0) {
+                // if transaction exists in memory, then exclude it
+                while (data != null && manager.transactionsById.containsKey(data.txnId)) {
+                    if (exclusions.size == 20) {
+                        data = null
+                        break
                     }
-                    data ?: break
-                    recoverForData(data)
-                    data = repo.findDataToRecover(exclusions)
+                    exclusions.add(data.txnId)
+                    data = repo.findOwnDataToRecover(exclusions)
                 }
+                data ?: break
+                recoverForData(data)
+                data = repo.findOwnDataToRecover(exclusions)
+            }
+        }
+
+        // recover transactions without active owner
+        appLockApi.doInSyncOrSkip("ecos.txn.recovery") {
+            data = repo.findDataToRecover()
+            var iterations = 10
+            while (data != null && --iterations > 0) {
+                recoverForData(data)
+                data = repo.findDataToRecover()
             }
         }
     }
