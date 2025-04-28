@@ -21,7 +21,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
     private val remoteClient = manager.remoteClient
     private val currentAppName = manager.webAppApi.getProperties().appName
 
-    private var shutdownHookThread: Thread = thread(start = false) { jobThreadActive.set(false) }
+    private var shutdownHookThread: Thread? = null
 
     @Synchronized
     fun start() {
@@ -35,9 +35,16 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
             System.currentTimeMillis() + RECOVERY_PERIOD_MS
         )
 
-        thread(start = true, name = "ecos-txn-manager-job") {
+        val mainThread = thread(start = false, name = "ecos-txn-manager-job") {
             while (jobThreadActive.get()) {
-                Thread.sleep(10000)
+                try {
+                    Thread.sleep(10000)
+                } catch (e: InterruptedException) {
+                    continue
+                }
+                if (!jobThreadActive.get()) {
+                    break
+                }
                 try {
                     AuthContext.runAsSystem {
                         disposeInactiveTransactions()
@@ -47,15 +54,20 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
                         }
                     }
                 } catch (e: Throwable) {
-                    if (e is InterruptedException) {
-                        Thread.currentThread().interrupt()
-                        throw e
-                    }
                     log.error(e) { "Exception in ecos-txn-manager-job" }
                 }
             }
+            shutdownHookThread?.let {
+                Runtime.getRuntime().removeShutdownHook(it)
+            }
+            shutdownHookThread = null
+        }
+        shutdownHookThread = thread(start = false) {
+            jobThreadActive.set(false)
+            mainThread.interrupt()
         }
         Runtime.getRuntime().addShutdownHook(shutdownHookThread)
+        mainThread.start()
     }
 
     private fun disposeInactiveTransactions() {
@@ -120,6 +132,5 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
     @Synchronized
     fun stop() {
         jobThreadActive.set(false)
-        Runtime.getRuntime().removeShutdownHook(shutdownHookThread)
     }
 }
