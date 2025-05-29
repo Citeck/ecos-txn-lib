@@ -11,11 +11,11 @@ import ru.citeck.ecos.txn.lib.transaction.ctx.EmptyTxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.obs.EcosTxnSyncObsContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
-import java.lang.RuntimeException
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.RuntimeException
 import kotlin.collections.ArrayList
 import kotlin.collections.HashMap
 import kotlin.collections.LinkedHashMap
@@ -186,6 +186,7 @@ class TransactionImpl(
         for (res in resources) {
             if (res.resource.prepareCommit() == CommitPrepareStatus.PREPARED) {
                 preparedXids.add(res.resource.getXid())
+                res.wasPreparedToCommit = true
             } else {
                 res.readOnlyOnPrepare = true
             }
@@ -244,23 +245,36 @@ class TransactionImpl(
             TransactionStatus.ACTIVE,
             TransactionStatus.PREPARING,
             TransactionStatus.PREPARED,
-            TransactionStatus.COMMITTING
+            TransactionStatus.COMMITTING,
+            TransactionStatus.ROLLING_BACK
         )
         setStatus(TransactionStatus.ROLLING_BACK)
+        var exception = cause
         for (resData in resources) {
-            if (!resData.committed) {
+            if (!resData.committed && !resData.rolledBack) {
                 try {
                     resData.resource.rollback()
+                    resData.rolledBack = true
                 } catch (e: Throwable) {
-                    if (cause == null) {
-                        throw e
+                    val errorMsg = "Error while rollback. Txn: $txnId Resource: '${resData.name}'"
+                    if (resData.wasPreparedToCommit) {
+                        if (exception == null) {
+                            exception = RuntimeException(errorMsg)
+                        }
+                        exception.addSuppressed(e)
                     } else {
-                        cause.addSuppressed(RuntimeException("Error while rollback. Resource: '${resData.name}'", e))
+                        resData.rolledBack = true
+                        log.debug(e) { errorMsg }
                     }
                 }
+            } else if (resData.committed) {
+                logDebug { "Resource already committed and can't be rolled back. Resource: '${resData.name}'" }
             } else {
-                logError { "Resource already committed and can't be rolled back: '${resData.name}'" }
+                logDebug { "Resource already rolled back. Resource: '${resData.name}'" }
             }
+        }
+        if (cause == null && exception != null) {
+            throw exception
         }
         setStatus(TransactionStatus.ROLLED_BACK)
     }
@@ -278,7 +292,7 @@ class TransactionImpl(
 
     private fun checkStatus(vararg expectedStatuses: TransactionStatus) {
         if (expectedStatuses.none { txnStatus == it }) {
-            error("Invalid status: $txnStatus")
+            error("Invalid status: $txnStatus. Expected one of ${expectedStatuses.joinToString()}")
         }
     }
 
@@ -426,6 +440,8 @@ class TransactionImpl(
         val resource: TransactionResource,
         val name: String,
         var readOnlyOnPrepare: Boolean = false,
-        var committed: Boolean = false
+        var committed: Boolean = false,
+        var wasPreparedToCommit: Boolean = false,
+        var rolledBack: Boolean = false
     )
 }

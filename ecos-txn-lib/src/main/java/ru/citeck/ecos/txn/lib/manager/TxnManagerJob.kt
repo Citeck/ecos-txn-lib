@@ -21,7 +21,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
     private val remoteClient = manager.remoteClient
     private val currentAppName = manager.webAppApi.getProperties().appName
 
-    private var shutdownHookThread: Thread? = null
+    private val shutdownHookThread = AtomicReference<Thread>()
 
     @Synchronized
     fun start() {
@@ -57,16 +57,19 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
                     log.error(e) { "Exception in ecos-txn-manager-job" }
                 }
             }
-            shutdownHookThread?.let {
+            shutdownHookThread.get()?.let {
                 Runtime.getRuntime().removeShutdownHook(it)
             }
-            shutdownHookThread = null
+            shutdownHookThread.set(null)
         }
-        shutdownHookThread = thread(start = false) {
-            jobThreadActive.set(false)
-            mainThread.interrupt()
-        }
-        Runtime.getRuntime().addShutdownHook(shutdownHookThread)
+        shutdownHookThread.set(
+            thread(start = false) {
+                shutdownHookThread.set(null)
+                jobThreadActive.set(false)
+                mainThread.interrupt()
+            }
+        )
+        Runtime.getRuntime().addShutdownHook(shutdownHookThread.get())
         mainThread.start()
     }
 
