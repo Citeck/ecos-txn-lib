@@ -337,7 +337,7 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     private inline fun logError(txnId: TxnId, e: Throwable, crossinline message: () -> String) {
-        log.error(e) { "[$txnId]" + message.invoke() }
+        log.error(e) { "[$txnId] " + message.invoke() }
     }
 
     private inline fun logDebug(transaction: Transaction, crossinline message: () -> String) {

@@ -315,7 +315,13 @@ class TransactionImpl(
         }
         if (!isCompleted()) {
             if (readOnly) {
-                onePhaseCommit()
+                try {
+                    onePhaseCommit()
+                } catch (e: Throwable) {
+                    logDebug(e) { "onePhaseCommit completed with error" }
+                    // error is not a problem in RO transaction
+                    setStatus(TransactionStatus.COMMITTED)
+                }
             } else {
                 logError { "Uncompleted transaction disposing. Status: $txnStatus" }
                 val rollbackCause = RuntimeException(
@@ -337,6 +343,14 @@ class TransactionImpl(
         resources.clear()
         actionsById.clear()
         setStatus(TransactionStatus.DISPOSED)
+    }
+
+    private inline fun logDebug(error: Throwable, crossinline msg: () -> String) {
+        if (!baseReadOnly) {
+            log.debug(error) { getTxnForLog() + msg.invoke() }
+        } else {
+            log.trace(error) { getTxnForLog() + msg.invoke() }
+        }
     }
 
     private inline fun logDebug(crossinline msg: () -> String) {
