@@ -10,7 +10,8 @@ class TxnIdTest {
 
     @Test
     fun test() {
-        repeat(40 /* more than NUM_TO_STR_RADIX */) {
+        // more than NUM_TO_STR_RADIX
+        repeat(40) {
             testTxnId("emodel", "4k5hnzwxzmua", false)
         }
         testTxnId("emodel-abc", "!23eaqw-qed_Wc.z/.|?", true)
