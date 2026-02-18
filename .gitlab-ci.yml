@@ -1,0 +1,4 @@
+include:
+  - component: gitlab.citeck.ru/infrastructure/gitlab-ci/maven-lib@1
+    inputs:
+      jdk_version: "21"

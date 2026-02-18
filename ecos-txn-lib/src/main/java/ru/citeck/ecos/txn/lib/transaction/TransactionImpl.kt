@@ -201,6 +201,10 @@ class TransactionImpl(
 
     override fun commitPrepared() {
         logDebug { "Commit prepared" }
+        if (txnStatus == TransactionStatus.COMMITTED) {
+            logDebug { "Transaction is already committed" }
+            return
+        }
         checkStatus(TransactionStatus.PREPARED)
         setStatus(TransactionStatus.COMMITTING)
         for (resData in resources) {
@@ -214,6 +218,10 @@ class TransactionImpl(
 
     override fun onePhaseCommit() {
         logDebug { "One phase commit" }
+        if (txnStatus == TransactionStatus.COMMITTED) {
+            logDebug { "Transaction is already committed" }
+            return
+        }
         checkStatus(TransactionStatus.ACTIVE)
         setStatus(TransactionStatus.COMMITTING)
         if (resources.isNotEmpty()) {
@@ -241,6 +249,10 @@ class TransactionImpl(
 
     override fun rollback(cause: Throwable?) {
         logDebug { "Rollback" }
+        if (txnStatus == TransactionStatus.ROLLED_BACK) {
+            logDebug { "Transaction is already rolled back" }
+            return
+        }
         checkStatus(
             TransactionStatus.ACTIVE,
             TransactionStatus.PREPARING,
