@@ -155,6 +155,16 @@ class TransactionManagerImpl : TransactionManager {
         action: (ExtTxnWorkContext) -> T
     ): T {
 
+        // A read-only local txn that was kept alive for cache purposes can't host a
+        // subsequent non-readonly action (TransactionImpl forbids RO→non-RO downgrade).
+        // When the originator's next webapi call needs a writable txn, dispose the kept
+        // RO local copy and create a fresh non-readonly one. The cached snapshot is
+        // invalidated either way as soon as a writable action runs against the same data.
+        val existing = transactionsById[extTxnId]
+        if (existing != null && existing.transaction.isReadOnly() && !readOnly) {
+            dispose(extTxnId)
+        }
+
         var isNewLocalTxn = false
 
         val transaction = transactionsById.computeIfAbsent(extTxnId) {

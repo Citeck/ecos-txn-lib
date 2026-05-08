@@ -529,6 +529,41 @@ class TransactionManagerTest {
     }
 
     @Test
+    fun extTxnRecreatedOnReadOnlyToWriteDowngrade() {
+        // Regression: when the originator follows a read-only ext-txn call with a writable
+        // call sharing the same external txnId, the kept-alive RO local copy must be
+        // disposed and recreated as non-readonly. Otherwise TransactionImpl rejects the
+        // writable action with "You can't execute non readOnly action inside readOnly action".
+        val extTxnId = TxnId.create("origin-app", "instance-0")
+        val ctx = CapturingTxnManagerContext()
+
+        // First call: RO that populates cache so the txn is kept alive across stopWork.
+        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+            try {
+                TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                Unit
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+        assertThat(txnManager.getTransactionOrNull(extTxnId))
+            .describedAs("RO with cache should be kept alive")
+            .isNotNull
+
+        // Second call with the same extTxnId but readOnly = false.
+        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, false) { workCtx ->
+            try {
+                assertThat(TxnContext.getTxn().isReadOnly())
+                    .describedAs("writable second call must see a non-RO local txn")
+                    .isFalse
+                Unit
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+    }
+
+    @Test
     fun readOnlyDoInNewTxnDisposesRemoteParticipantsAsync() {
         // The originator's read-only root txn fans out disposeTxn to every registered
         // participant on the platform executor. Verify both that each non-current app
