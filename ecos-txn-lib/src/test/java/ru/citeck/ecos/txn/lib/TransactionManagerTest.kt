@@ -6,14 +6,20 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import ru.citeck.ecos.test.commons.EcosWebAppApiMock
+import ru.citeck.ecos.txn.lib.action.TxnActionRef
+import ru.citeck.ecos.txn.lib.action.TxnActionType
+import ru.citeck.ecos.txn.lib.commit.TxnCommitData
 import ru.citeck.ecos.txn.lib.manager.EcosTxnProps
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.manager.TransactionPolicy
+import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
+import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -438,6 +444,164 @@ class TransactionManagerTest {
         // new transaction has fresh data
         TxnContext.doInTxn {
             assertThat(TxnContext.getTxn().getData<String>("key")).isNull()
+        }
+    }
+
+    @Test
+    fun readOnlyExtTxnKeepsCachedDataAcrossStopWorkCalls() {
+        // Simulates two consecutive webapi calls into this app under the same external
+        // read-only txn. The second call must see data populated by the first — i.e. the
+        // local txn must not be disposed when the first call completes.
+        val extTxnId = TxnId.create("origin-app", "instance-0")
+        val ctx = CapturingTxnManagerContext()
+
+        val firstCallSawData = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+            try {
+                val value = TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                assertThat(value).isEqualTo("computed-cache-key")
+                Unit
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+        assertThat(firstCallSawData).isNotNull
+
+        val secondCallSawCache = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+            try {
+                val cached = TxnContext.getTxn().getData<String>("cache-key")
+                assertThat(cached)
+                    .describedAs("cached value must survive between read-only ext-txn calls")
+                    .isEqualTo("computed-cache-key")
+                cached
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+        assertThat(secondCallSawCache).isEqualTo("computed-cache-key")
+    }
+
+    @Test
+    fun emptyReadOnlyExtTxnIsDisposedImmediately() {
+        // Read-only ext-txn with no cache work, no resources, no actions falls back to the
+        // pre-cache behavior: dispose at end of stopWork. Otherwise empty RO requests would
+        // accumulate as lingering local copies until the TxnManagerJob reaped them.
+        val extTxnId = TxnId.create("origin-app", "instance-0")
+        val ctx = CapturingTxnManagerContext()
+
+        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+            try {
+                // intentionally do nothing — no getData, no resources, no actions
+                Unit
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+
+        assertThat(txnManager.getTransactionOrNull(extTxnId))
+            .describedAs("empty RO ext-txn should be disposed immediately by stopWork")
+            .isNull()
+        assertThat(ctx.registeredApps)
+            .describedAs("empty RO ext-txn should NOT register current app as a participant")
+            .doesNotContain("test-app")
+    }
+
+    @Test
+    fun readOnlyExtTxnRegistersCurrentAppAsParticipantWhenKeepingTxnAlive() {
+        // When a read-only ext-txn is kept alive (cache survives stopWork), the originating
+        // app must learn about us so it can dispose us when its root txn ends. We signal that
+        // by registering currentApp in the response's xids map (with an empty set if no real
+        // xids were registered).
+        val extTxnId = TxnId.create("origin-app", "instance-0")
+        val ctx = CapturingTxnManagerContext()
+
+        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+            try {
+                TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                Unit
+            } finally {
+                workCtx.stopWork()
+            }
+        }
+
+        assertThat(ctx.registeredApps)
+            .describedAs("current app should be registered so the origin can clean up after root txn ends")
+            .contains("test-app")
+    }
+
+    @Test
+    fun readOnlyDoInNewTxnDisposesRemoteParticipantsAsync() {
+        // The originator's read-only root txn fans out disposeTxn to every registered
+        // participant on the platform executor. Verify both that each non-current app
+        // gets exactly one disposeTxn and that no commit/coordinate plumbing is invoked
+        // (RO disposal must skip commitCoordinator and the 2PC repo entirely).
+        txnManager.shutdown()
+        val recording = RecordingRemoteClient(disposeLatch = CountDownLatch(2))
+        txnManager = TransactionManagerImpl()
+        txnManager.init(EcosWebAppApiMock("test-app"), EcosTxnProps(), remoteClient = recording)
+        TxnContext.setManager(txnManager)
+
+        txnManager.doInTxn(TransactionPolicy.REQUIRED, true) {
+            TxnContext.getTxn().registerXids("peer-app-a", emptySet())
+            TxnContext.getTxn().registerXids("peer-app-b", emptySet())
+        }
+
+        assertThat(recording.disposeLatch!!.await(2, TimeUnit.SECONDS))
+            .describedAs("async dispose fan-out must reach both participants")
+            .isTrue
+        val disposeCalls = recording.calls.filter { it.startsWith("disposeTxn:") }
+        assertThat(disposeCalls).containsExactlyInAnyOrder("disposeTxn:peer-app-a", "disposeTxn:peer-app-b")
+        assertThat(recording.calls.any { it.startsWith("coordinateCommit") || it.startsWith("prepareCommit") })
+            .describedAs("RO disposal must not go through commit/2PC paths")
+            .isFalse
+    }
+
+    private class RecordingRemoteClient(
+        val disposeLatch: CountDownLatch? = null
+    ) : TxnManagerRemoteApiClient {
+        val calls: MutableList<String> = CopyOnWriteArrayList()
+
+        override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
+            calls.add("coordinateCommit:$app")
+        }
+        override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) {
+            calls.add("recoveryCommit:$app")
+        }
+        override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) {
+            calls.add("recoveryRollback:$app")
+        }
+        override fun disposeTxn(app: String, txnId: TxnId) {
+            calls.add("disposeTxn:$app")
+            disposeLatch?.countDown()
+        }
+        override fun onePhaseCommit(app: String, txnId: TxnId) {
+            calls.add("onePhaseCommit:$app")
+        }
+        override fun prepareCommit(app: String, txnId: TxnId): List<EcosXid> {
+            calls.add("prepareCommit:$app")
+            return emptyList()
+        }
+        override fun commitPrepared(app: String, txnId: TxnId) {
+            calls.add("commitPrepared:$app")
+        }
+        override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) {
+            calls.add("executeTxnAction:$app")
+        }
+        override fun rollback(app: String, txnId: TxnId, cause: Throwable?) {
+            calls.add("rollback:$app")
+        }
+        override fun getTxnStatus(app: String, txnId: TxnId): TransactionStatus {
+            calls.add("getTxnStatus:$app")
+            return TransactionStatus.NO_TRANSACTION
+        }
+        override fun isAppAvailable(app: String): Boolean = true
+        override fun isApiVersionSupported(app: String, version: Int) = ApiVersionRes.SUPPORTED
+    }
+
+    private class CapturingTxnManagerContext : TxnManagerContext {
+        val registeredApps = mutableSetOf<String>()
+        override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {}
+        override fun registerXids(appName: String, xids: Collection<EcosXid>) {
+            registeredApps.add(appName)
         }
     }
 

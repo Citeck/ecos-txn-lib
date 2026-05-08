@@ -86,4 +86,12 @@ interface ManagedTransaction : Transaction {
      * Disposes of the transaction, releasing resources and cleaning up after the transaction has completed.
      */
     fun dispose()
+
+    /**
+     * Checks whether anything has been stored in the transaction's data map via [Transaction.getData].
+     * Lets management code tell apart a transaction that did real cache work from one whose data
+     * map is empty — useful for deciding whether the local copy is worth keeping alive across
+     * multiple webapi calls under the same external txnId.
+     */
+    fun hasData(): Boolean
 }

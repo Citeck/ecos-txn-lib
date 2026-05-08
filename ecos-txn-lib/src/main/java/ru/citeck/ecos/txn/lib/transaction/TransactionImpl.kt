@@ -448,6 +448,10 @@ class TransactionImpl(
         return data.computeIfAbsent(key) { compute.invoke(it as K) } as T
     }
 
+    override fun hasData(): Boolean {
+        return data.isNotEmpty()
+    }
+
     override fun isCompleted(): Boolean {
         return when (this.txnStatus) {
             TransactionStatus.ROLLED_BACK,

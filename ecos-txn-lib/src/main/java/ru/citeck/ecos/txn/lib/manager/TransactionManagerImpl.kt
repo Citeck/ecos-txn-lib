@@ -166,13 +166,29 @@ class TransactionManagerImpl : TransactionManager {
 
         val workContext = object : ExtTxnWorkContext {
             override fun stopWork(): Boolean {
-                val workWasStateless = isNewLocalTxn && (transaction.isEmpty() || readOnly)
+                // A read-only txn is kept alive only if it actually carries cached data:
+                // tx-scoped caches stored via Transaction.getData must survive across multiple
+                // webapi calls sharing the same external txnId, so disposing on every reply
+                // would reset the cache between calls. An empty read-only txn (no resources,
+                // no actions, no data) is still disposed eagerly — same as the original behavior.
+                val workWasStateless = isNewLocalTxn &&
+                    transaction.isEmpty() &&
+                    (!readOnly || !transaction.hasData())
                 if (workWasStateless) {
                     try {
                         dispose(extTxnId)
                     } catch (e: Throwable) {
                         logError(extTxnId, e) { "Error while dispose local-external transaction" }
                     }
+                } else if (isNewLocalTxn) {
+                    // The local txn is being kept alive (readonly with cached data, or stateful
+                    // work). Register the current app as a participant so the originating app's
+                    // disposeRoot will notify us when the root txn ends — without this the
+                    // background TxnManagerJob would have to GC the lingering local txn after
+                    // it goes idle. For stateful txns getOrAddRes already registered xids for
+                    // the current app and this is a no-op on the receiving ctx (addAll of an
+                    // empty set).
+                    ctx.registerXids(webAppProps.appName, emptySet())
                 }
                 return !workWasStateless
             }
@@ -238,8 +254,33 @@ class TransactionManagerImpl : TransactionManager {
                 val actionRes = txnActionObservation.observe { action.invoke() }
 
                 if (readOnly) {
+                    // Local dispose stays synchronous — committing read-only resources via
+                    // onePhaseCommit happens inside transaction.dispose(), and callers expect
+                    // those side effects to be observable as soon as doInTxn returns.
                     AuthContext.runAsSystem {
-                        commitCoordinator.disposeRoot(newTxnId, xidsByApp.keys, null)
+                        dispose(newTxnId)
+                    }
+                    // Each remote participant is notified on its own task via the platform
+                    // txn-actions executor (the same one TxnActionsManager uses for async
+                    // commit/rollback work) so the total wait collapses from sum-of-latencies
+                    // to max-of-latencies and a slow peer can't hold up the others. Read-only
+                    // disposal is idempotent and writes nothing to the 2PC repo, so we skip
+                    // commitCoordinator and call remoteClient.disposeTxn directly. A late or
+                    // even dropped notification is harmless — each participant's TxnManagerJob
+                    // is the fallback.
+                    for (app in xidsByApp.keys) {
+                        if (app == webAppProps.appName) {
+                            continue
+                        }
+                        txnActionsExecutor.execute("ecos-txn-ro-dispose-$newTxnId-$app") {
+                            AuthContext.runAsSystem {
+                                try {
+                                    remoteClient.disposeTxn(app, newTxnId)
+                                } catch (e: Throwable) {
+                                    logError(newTxnId, e) { "Async dispose of RO txn failed for app $app" }
+                                }
+                            }
+                        }
                     }
                     actionRes
                 } else {
