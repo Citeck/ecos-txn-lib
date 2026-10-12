@@ -1,4 +1,5 @@
 include:
-  - component: gitlab.citeck.ru/infrastructure/gitlab-ci/maven-lib@1
+  - component: gitlab.citeck.ru/infrastructure/gitlab-ci/maven-lib@2
     inputs:
       jdk_version: "21"
+      artifact_scope: "community"
