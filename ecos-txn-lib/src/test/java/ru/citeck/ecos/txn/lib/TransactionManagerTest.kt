@@ -457,7 +457,7 @@ class TransactionManagerTest {
 
         val firstCallSawData = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
             try {
-                val value = TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                val value = TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 assertThat(value).isEqualTo("computed-cache-key")
                 Unit
             } finally {
@@ -468,7 +468,7 @@ class TransactionManagerTest {
 
         val secondCallSawCache = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
             try {
-                val cached = TxnContext.getTxn().getData<String>("cache-key")
+                val cached = TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key")["value"]
                 assertThat(cached)
                     .describedAs("cached value must survive between read-only ext-txn calls")
                     .isEqualTo("computed-cache-key")
@@ -516,7 +516,7 @@ class TransactionManagerTest {
 
         txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
             try {
-                TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 Unit
             } finally {
                 workCtx.stopWork()
@@ -540,7 +540,7 @@ class TransactionManagerTest {
         // First call: RO that populates cache so the txn is kept alive across stopWork.
         txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
             try {
-                TxnContext.getTxn().getData("cache-key") { "computed-$it" }
+                TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 Unit
             } finally {
                 workCtx.stopWork()

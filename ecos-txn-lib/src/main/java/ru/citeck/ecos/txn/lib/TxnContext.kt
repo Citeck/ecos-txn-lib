@@ -164,6 +164,15 @@ object TxnContext {
         collection.add(element)
     }
 
+    /**
+     * Returns the current transaction's read-only cache, or a fresh empty map if no transaction exists.
+     * See [Transaction.getReadOnlyCache] for cache lifetime and invalidation rules.
+     */
+    @JvmStatic
+    fun <K : Any, V : Any> getReadOnlyCache(key: Any): MutableMap<K, V> {
+        return getTxnOrNull()?.getReadOnlyCache<K, V>(key) ?: HashMap()
+    }
+
     @JvmStatic
     fun getTxn(): Transaction {
         return getTxnOrNull() ?: error("Transaction doesn't exists")

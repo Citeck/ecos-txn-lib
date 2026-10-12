@@ -88,9 +88,9 @@ interface ManagedTransaction : Transaction {
     fun dispose()
 
     /**
-     * Checks whether anything has been stored in the transaction's data map via [Transaction.getData].
+     * Checks whether ordinary transaction data or [Transaction.getReadOnlyCache] maps are retained.
      * Lets management code tell apart a transaction that did real cache work from one whose data
-     * map is empty — useful for deciding whether the local copy is worth keeping alive across
+     * and cache registry are empty — useful for deciding whether the local copy is worth keeping alive across
      * multiple webapi calls under the same external txnId.
      */
     fun hasData(): Boolean

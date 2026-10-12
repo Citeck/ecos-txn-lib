@@ -53,6 +53,120 @@ class TransactionImplTest {
         }
     }
 
+    @Test
+    fun `read-only cache is reused across nested read-only actions`() {
+        val txn = createTxn(true)
+        val cache = txn.getReadOnlyCache<String, String>("cache")
+        cache["value"] = "before"
+        txn.doWithinTxn(noopCtx(), true) {
+            assertThat(txn.getReadOnlyCache<String, String>("cache")).isSameAs(cache)
+        }
+        assertThat(txn.getReadOnlyCache<String, String>("cache")["value"]).isEqualTo("before")
+        assertThat(txn.hasData()).isTrue()
+    }
+
+    @Test
+    fun `restoring writable mode clears caches but preserves transaction data`() {
+        val txn = createTxn()
+        val state = txn.getData("state") { mutableListOf("pending action") }
+        lateinit var cache: MutableMap<String, String>
+        txn.doWithinTxn(noopCtx(), true) {
+            cache = txn.getReadOnlyCache("cache")
+            cache["value"] = "before"
+        }
+        assertThat(cache).isEmpty()
+        assertThat(txn.getData<MutableList<String>>("state")).isSameAs(state)
+        txn.doWithinTxn(noopCtx(), true) {
+            assertThat(txn.getReadOnlyCache<String, String>("cache")).isEmpty()
+        }
+    }
+
+    @Test
+    fun `exception leaving read-only action also invalidates caches`() {
+        val txn = createTxn()
+        lateinit var cache: MutableMap<String, String>
+        assertThatThrownBy {
+            txn.doWithinTxn(noopCtx(), true) {
+                cache = txn.getReadOnlyCache("cache")
+                cache["value"] = "before"
+                error("failed read")
+            }
+        }.hasMessage("failed read")
+        assertThat(txn.isReadOnly()).isFalse()
+        assertThat(cache).isEmpty()
+    }
+
+    @Test
+    fun `writable mode does not retain caches`() {
+        val txn = createTxn()
+        txn.getReadOnlyCache<String, String>("cache")["value"] = "uncached"
+        assertThat(txn.getReadOnlyCache<String, String>("cache")).isEmpty()
+        assertThat(txn.hasData()).isFalse()
+    }
+
+    @Test
+    fun `managed mode change invalidates caches without clearing ordinary data`() {
+        val txn = createTxn(true)
+        txn.getData("state") { "pending action" }
+        val cache = txn.getReadOnlyCache<String, String>("cache")
+        cache["value"] = "before"
+        txn.setReadOnly(false)
+        assertThat(cache).isEmpty()
+        assertThat(txn.getData<String>("state")).isEqualTo("pending action")
+        txn.setReadOnly(true)
+        assertThat(txn.getReadOnlyCache<String, String>("cache")).isEmpty()
+    }
+
+    @Test
+    fun `disposal clears caches held by callers`() {
+        val txn = createTxn(true)
+        txn.start()
+        val cache = txn.getReadOnlyCache<String, String>("cache")
+        cache["value"] = "before"
+        txn.dispose()
+        assertThat(cache).isEmpty()
+        assertThat(txn.hasData()).isFalse()
+    }
+
+    @Test
+    fun `context cache without transaction returns independent mutable maps`() {
+        assertThat(TxnContext.getTxnOrNull()).isNull()
+        val first = TxnContext.getReadOnlyCache<String, String>("cache")
+        first["value"] = "uncached"
+        val second = TxnContext.getReadOnlyCache<String, String>("cache")
+        assertThat(second).isNotSameAs(first).isEmpty()
+        assertThat(TxnContext.getTxnOrNull()).isNull()
+    }
+
+    @Test
+    fun `context cache delegates to current read-only transaction`() {
+        TxnContext.doInTxn(readOnly = true) {
+            val cache = TxnContext.getReadOnlyCache<String, String>("cache")
+            cache["value"] = "cached"
+            assertThat(TxnContext.getTxn().getReadOnlyCache<String, String>("cache")).isSameAs(cache)
+            TxnContext.doInTxn(readOnly = true) {
+                assertThat(TxnContext.getReadOnlyCache<String, String>("cache")).isSameAs(cache)
+            }
+        }
+    }
+
+    @Test
+    fun `context cache respects writable mode and nested read-only invalidation`() {
+        TxnContext.doInTxn {
+            TxnContext.getReadOnlyCache<String, String>("cache")["value"] = "uncached"
+            assertThat(TxnContext.getReadOnlyCache<String, String>("cache")).isEmpty()
+            lateinit var cache: MutableMap<String, String>
+            TxnContext.doInTxn(readOnly = true) {
+                cache = TxnContext.getReadOnlyCache("cache")
+                cache["value"] = "cached"
+            }
+            assertThat(cache).isEmpty()
+            TxnContext.doInTxn(readOnly = true) {
+                assertThat(TxnContext.getReadOnlyCache<String, String>("cache")).isNotSameAs(cache).isEmpty()
+            }
+        }
+    }
+
     // ==================== Status transitions ====================
 
     @Test

@@ -12,6 +12,7 @@ import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.obs.EcosTxnSyncObsContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
@@ -48,13 +49,14 @@ class TransactionImpl(
     private val synchronizations = ArrayList<TransactionSynchronization>()
 
     private val data = LinkedHashMap<Any, Any?>()
+    private val readOnlyCaches = HashMap<Any, MutableMap<Any, Any>>()
 
     private val isIdle = AtomicBoolean(true)
     private val lastActiveTime = AtomicReference(Instant.now())
 
     override fun setReadOnly(readOnly: Boolean) {
         this.baseReadOnly = readOnly
-        this.readOnly = readOnly
+        updateReadOnly(readOnly)
     }
 
     override fun start() {
@@ -146,12 +148,24 @@ class TransactionImpl(
             error("You can't execute non readOnly action inside readOnly action")
         }
         val prevValue = this.readOnly
-        this.readOnly = readOnly
+        updateReadOnly(readOnly)
         try {
             return action.invoke()
         } finally {
-            this.readOnly = prevValue
+            updateReadOnly(prevValue)
         }
+    }
+
+    private fun updateReadOnly(readOnly: Boolean) {
+        if (this.readOnly && !readOnly) {
+            clearReadOnlyCaches()
+        }
+        this.readOnly = readOnly
+    }
+
+    private fun clearReadOnlyCaches() {
+        readOnlyCaches.values.forEach { it.clear() }
+        readOnlyCaches.clear()
     }
 
     override fun addAction(type: TxnActionType, action: TxnActionRef) {
@@ -321,6 +335,7 @@ class TransactionImpl(
     }
 
     override fun dispose() {
+        clearReadOnlyCaches()
         if (isEmpty()) {
             setStatus(TransactionStatus.DISPOSED)
             return
@@ -438,6 +453,14 @@ class TransactionImpl(
         return lastActiveTime.get()
     }
 
+    override fun <K : Any, V : Any> getReadOnlyCache(key: Any): MutableMap<K, V> {
+        if (!readOnly) {
+            return HashMap()
+        }
+        @Suppress("UNCHECKED_CAST")
+        return readOnlyCaches.getOrPut(key) { ConcurrentHashMap() } as MutableMap<K, V>
+    }
+
     override fun <T : Any> getData(key: Any): T? {
         @Suppress("UNCHECKED_CAST")
         return data[key] as? T?
@@ -449,7 +472,7 @@ class TransactionImpl(
     }
 
     override fun hasData(): Boolean {
-        return data.isNotEmpty()
+        return data.isNotEmpty() || readOnlyCaches.isNotEmpty()
     }
 
     override fun isCompleted(): Boolean {

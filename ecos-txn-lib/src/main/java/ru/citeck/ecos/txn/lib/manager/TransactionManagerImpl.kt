@@ -177,7 +177,7 @@ class TransactionManagerImpl : TransactionManager {
         val workContext = object : ExtTxnWorkContext {
             override fun stopWork(): Boolean {
                 // A read-only txn is kept alive only if it actually carries cached data:
-                // tx-scoped caches stored via Transaction.getData must survive across multiple
+                // tx-scoped caches stored via Transaction.getReadOnlyCache must survive across multiple
                 // webapi calls sharing the same external txnId, so disposing on every reply
                 // would reset the cache between calls. An empty read-only txn (no resources,
                 // no actions, no data) is still disposed eagerly — same as the original behavior.

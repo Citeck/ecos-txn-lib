@@ -132,6 +132,15 @@ interface Transaction {
     fun getLastActiveTime(): Instant
 
     /**
+     * Returns a cache shared by read-only actions in this transaction.
+     * Cache entries are cleared whenever the transaction returns to writable mode,
+     * including restoration of the outer mode after a nested read-only action.
+     * In writable mode, returns a fresh map that is not retained by the transaction.
+     * Ordinary [getData] values are unaffected. Do not retain caches across action scopes.
+     */
+    fun <K : Any, V : Any> getReadOnlyCache(key: Any): MutableMap<K, V>
+
+    /**
      * Retrieves data associated with the given key from the transaction context.
      *
      * @param key The key associated with the data.
