@@ -72,8 +72,9 @@ interface Transaction {
      * Registers a synchronization callback to be executed at specific points during the transaction lifecycle.
      *
      * The registered `TransactionSynchronization` will have its `beforeCompletion` method called
-     * before the transaction is committed or rolled back, allowing for resource cleanup or other operations
-     * before the transaction completes. After the transaction is committed or rolled back, the
+     * once before commit, while writable transactions may still enlist resources and before the
+     * coordinator journals the participants. It is not invoked on rollback.
+     * After the transaction is committed or rolled back, the
      * `afterCompletion` method will be invoked with the final `TransactionStatus`, allowing for additional
      * actions to be performed post-transaction.
      *

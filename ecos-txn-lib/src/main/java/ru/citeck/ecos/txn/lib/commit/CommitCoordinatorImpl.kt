@@ -14,6 +14,7 @@ import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
 
 class CommitCoordinatorImpl(
@@ -65,97 +66,115 @@ class CommitCoordinatorImpl(
         data.actions.forEach { (_, v) -> v.forEach { txnApps.add(it.appName) } }
 
         if (commitCoordinatorApp.isNotBlank() && commitCoordinatorApp != currentAppName) {
-            if (!isRemoteCommitCoordinatorAvailable()) {
+            val available = try {
+                isRemoteCommitCoordinatorAvailable()
+            } catch (error: Throwable) {
+                rollbackBeforeDecision(txnId, txnApps, data, error, txnLevel)
+                throw error
+            }
+            if (!available) {
                 log.debug {
                     "Commit coordinator app $commitCoordinatorApp doesn't support required web-api path."
                 }
             } else {
+                manager.transactionsById[txnId]?.commitDelegatedToApp = commitCoordinatorApp
                 remoteClient.coordinateCommit(commitCoordinatorApp, txnId, data, txnLevel)
                 if (!txnApps.contains(currentAppName)) {
                     manager.dispose(txnId)
-                } else {
-                    manager.transactionsById[txnId]?.commitDelegatedToApp = commitCoordinatorApp
                 }
                 return
             }
         }
-        repo.beforePrepare(txnId, data)
+        coordinateLocalCommit(txnId, data, txnApps, txnLevel)
+    }
 
-        val preparedAppsToCommit = HashSet<String>()
+    private fun coordinateLocalCommit(txnId: TxnId, data: TxnCommitData, txnApps: MutableSet<String>, txnLevel: Int) {
+        var commitDecisionAttempted = false
+        try {
+            repo.beforePrepare(txnId, data)
 
-        val txnAppsIt = txnApps.iterator()
-        while (txnAppsIt.hasNext()) {
-            val app = txnAppsIt.next()
-            try {
+            val preparedAppsToCommit = HashSet<String>()
+            val txnAppsIt = txnApps.iterator()
+            while (txnAppsIt.hasNext()) {
+                val app = txnAppsIt.next()
                 if (data.apps.containsKey(app)) {
                     val xids = remoteClient.prepareCommit(app, txnId)
                     if (xids.isNotEmpty()) {
                         preparedAppsToCommit.add(app)
                     } else {
-                        // if app answered 'NOTHING TO COMMIT', then rollback and disposing is not required
                         txnAppsIt.remove()
                     }
                 } else {
-                    // app without txn resources
                     remoteClient.onePhaseCommit(app, txnId)
                 }
-            } catch (mainError: Throwable) {
-                repo.beforeRollback(txnId, txnApps)
-                rollbackRoot(
-                    txnId,
-                    txnApps,
-                    data.actions[TxnActionType.AFTER_ROLLBACK],
-                    mainError,
-                    txnLevel
-                )
-                throw mainError
             }
-        }
 
-        // after this line transaction become eventually committed
-        // if something went wrong after this line, then we should not
-        // roll back transaction. In that case we should just wait until
-        // transaction will be committed by recovery mechanism
-        repo.beforeCommit(txnId, preparedAppsToCommit)
-
-        var commitError: Throwable? = null
-        val commitErrors = HashMap<String, Throwable>()
-        val committedApps = HashSet<String>()
-        if (preparedAppsToCommit.isEmpty()) {
-            repo.afterCommit(txnId, emptySet(), emptyMap())
-        } else {
-            for (appToCommit in preparedAppsToCommit) {
-                try {
-                    remoteClient.commitPrepared(appToCommit, txnId)
-                    committedApps.add(appToCommit)
-                } catch (e: Throwable) {
-                    // If a commit attempt fails for any app, the failed transaction
-                    // will be later recovered and the error handled accordingly.
-                    // The first error is captured, and any subsequent errors
-                    // are suppressed and associated with the initial one.
-                    commitErrors[appToCommit] = e
-                    if (commitError == null) {
-                        commitError = e
-                    } else {
-                        commitError.addSuppressed(e)
+            /**
+             * A lost journal-write response may already have persisted COMMIT.
+             * From this boundary only the stored decision can choose recovery.
+             */
+            commitDecisionAttempted = true
+            repo.beforeCommit(txnId, preparedAppsToCommit)
+            var commitError: Throwable? = null
+            val commitErrors = HashMap<String, Throwable>()
+            val committedApps = HashSet<String>()
+            if (preparedAppsToCommit.isEmpty()) {
+                repo.afterCommit(txnId, emptySet(), emptyMap())
+            } else {
+                for (appToCommit in preparedAppsToCommit) {
+                    try {
+                        remoteClient.commitPrepared(appToCommit, txnId)
+                        committedApps.add(appToCommit)
+                    } catch (error: Throwable) {
+                        commitErrors[appToCommit] = error
+                        if (commitError == null) {
+                            commitError = error
+                        } else {
+                            commitError.addSuppressed(error)
+                        }
                     }
                 }
+                repo.afterCommit(txnId, committedApps, commitErrors)
             }
-            repo.afterCommit(txnId, committedApps, commitErrors)
-        }
-        if (commitError == null) {
-            actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
-                .finally {
-                    disposeRoot(txnId, txnApps, null)
-                }
-        } else {
-            if (repo != NoopTwoPhaseCommitRepo) {
-                localTransactionsToRecover.add(txnId)
-                disposeRoot(txnId, committedApps, commitError, disposeCurrentApp = false)
+            if (commitError == null) {
+                actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
+                    .finally {
+                        disposeRoot(txnId, txnApps, null)
+                    }
             } else {
-                disposeRoot(txnId, txnApps, null)
+                /**
+                 * A missing durable repository does not make rollback safe after partial commit.
+                 */
+                disposeRoot(txnId, committedApps, commitError, disposeCurrentApp = false)
+                throw commitError
             }
-            throw commitError
+        } catch (error: Throwable) {
+            if (!commitDecisionAttempted) {
+                rollbackBeforeDecision(txnId, txnApps, data, error, txnLevel)
+            }
+            if (repo != NoopTwoPhaseCommitRepo) {
+                localTransactionsToRecover.addIfAbsent(txnId)
+            }
+            throw error
+        }
+    }
+
+    private fun rollbackBeforeDecision(
+        txnId: TxnId,
+        apps: Collection<String>,
+        data: TxnCommitData,
+        error: Throwable,
+        txnLevel: Int
+    ) {
+        try {
+            repo.beforeRollback(txnId, apps.toSet())
+        } catch (journalError: Throwable) {
+            error.addSuppressed(journalError)
+        }
+        try {
+            rollbackRoot(txnId, apps, data.actions[TxnActionType.AFTER_ROLLBACK], error, txnLevel)
+        } catch (rollbackError: Throwable) {
+            error.addSuppressed(rollbackError)
         }
     }
 
@@ -195,19 +214,38 @@ class CommitCoordinatorImpl(
         )
 
         val catchStartTime = System.currentTimeMillis()
+        val rolledBackApps = HashSet<String>()
+        val rollbackErrors = HashMap<String, Throwable>()
         rollbackObservation.observe {
             for (app in apps) {
                 try {
-                    remoteClient.rollback(app, txnId, error)
+                    // A null cause requires the client and participant to propagate rollback failures.
+                    remoteClient.rollback(app, txnId, null)
+                    rolledBackApps.add(app)
                 } catch (rollbackErr: Throwable) {
+                    rollbackErrors[app] = rollbackErr
                     rollbackObservation.observation.error(rollbackErr)
                     error.addSuppressed(rollbackErr)
                 }
             }
         }
 
+        var acknowledged = false
+        try {
+            repo.afterRollback(txnId, rolledBackApps, rollbackErrors)
+            acknowledged = true
+        } catch (journalError: Throwable) {
+            error.addSuppressed(journalError)
+        }
         actionsManager.executeActionsAfterRollback(txnId, txnLevel, error, actions)
-        disposeRoot(txnId, apps, error)
+        if (acknowledged) {
+            disposeRoot(
+                txnId,
+                rolledBackApps,
+                error,
+                disposeCurrentApp = currentAppName !in apps || currentAppName in rolledBackApps
+            )
+        }
 
         val rollbackTime = System.currentTimeMillis() - catchStartTime
         debug(txnId) { "Rollback executed in $rollbackTime ms" }
@@ -332,29 +370,28 @@ class CommitCoordinatorImpl(
                         webReqTargetApp = instanceFullId
                     }
                 }
-                val xids = recoveryData.data.apps[app] ?: emptySet()
-                if (xids.isNotEmpty()) {
-                    when (
-                        remoteClient.isApiVersionSupported(
-                            webReqTargetApp,
-                            TxnManagerRemoteApiClient.COORDINATE_COMMIT_VER
-                        )
-                    ) {
-                        ApiVersionRes.SUPPORTED -> {
-                            if (isCommitting) {
-                                remoteClient.recoveryCommit(webReqTargetApp, recoveryData.txnId, xids)
-                            } else {
-                                remoteClient.recoveryRollback(webReqTargetApp, recoveryData.txnId, xids)
-                            }
+                val journalXids = recoveryData.data.apps[app] ?: emptySet()
+                val xids = journalXids.ifEmpty { setOf(EcosXid.create(recoveryData.txnId, ByteArray(0))) }
+                when (
+                    remoteClient.isApiVersionSupported(
+                        webReqTargetApp,
+                        TxnManagerRemoteApiClient.GLOBAL_RECOVERY_VER
+                    )
+                ) {
+                    ApiVersionRes.SUPPORTED -> {
+                        if (isCommitting) {
+                            remoteClient.recoveryCommit(webReqTargetApp, recoveryData.txnId, xids)
+                        } else {
+                            remoteClient.recoveryRollback(webReqTargetApp, recoveryData.txnId, xids)
                         }
+                    }
 
-                        ApiVersionRes.APP_NOT_AVAILABLE -> {
-                            error("App '$app' is not available")
-                        }
+                    ApiVersionRes.APP_NOT_AVAILABLE -> {
+                        error("App '$app' is not available")
+                    }
 
-                        ApiVersionRes.NOT_SUPPORTED -> {
-                            error("Recovery API is not supported by app '$app'")
-                        }
+                    ApiVersionRes.NOT_SUPPORTED -> {
+                        error("Global recovery API is not supported by app '$app'; retain coordinator data until upgrade")
                     }
                 }
                 processedApps.add(app)
@@ -424,6 +461,9 @@ class CommitCoordinatorImpl(
             }
         }
         disposeRoot(recoveryData.txnId, aliveAppsInstances, null, false)
+        if (manager.getManagedTransactionOrNull(recoveryData.txnId)?.isCompleted() == true) {
+            manager.dispose(recoveryData.txnId)
+        }
         return true
     }
 

@@ -89,7 +89,7 @@ class TxnManagerWebExecutor constructor(
             else -> error("Unknown type $type")
         }
 
-        val respData = remoteActions.execute(actionType, body, 0)
+        val respData = remoteActions.execute(actionType, body, request.getApiVersion())
         if (respData != null) {
             response.getBodyWriter().writeDto(respData)
         }

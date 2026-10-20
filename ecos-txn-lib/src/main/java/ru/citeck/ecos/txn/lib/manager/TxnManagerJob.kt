@@ -3,6 +3,7 @@ package ru.citeck.ecos.txn.lib.manager
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.context.lib.auth.AuthContext
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
+import java.time.Instant
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
@@ -31,6 +32,9 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
             return
         }
 
+        val startupRecovery = manager.createStartupOrphanRecovery()
+        startupRecovery.start(Instant.now())
+
         val nextRecoveringTime = AtomicReference(
             System.currentTimeMillis() + RECOVERY_PERIOD_MS
         )
@@ -47,6 +51,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
                 }
                 try {
                     AuthContext.runAsSystem {
+                        startupRecovery.runIfDue(Instant.now())
                         disposeInactiveTransactions()
                         if (System.currentTimeMillis() > nextRecoveringTime.get()) {
                             manager.commitCoordinator.runTxnRecovering()
@@ -82,11 +87,14 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
         val nonAliveTime = System.currentTimeMillis() - MAX_NON_ALIVE_TIME_MS
         for (txnId in transactionsById.keys) {
             val txnInfo = transactionsById[txnId] ?: continue
-            if (
-                txnInfo.managerCanRecoverPreparedTxn &&
-                txnInfo.transaction.getStatus() == TransactionStatus.PREPARED
+            val status = txnInfo.transaction.getStatus()
+            if (status == TransactionStatus.COMMITTING ||
+                (txnInfo.managerCanRecoverPreparedTxn && !txnInfo.transaction.isCompleted())
             ) {
-                // prepared transaction will wait until transaction manager commit or rollback it
+                /**
+                 * A timeout cannot reverse an unresolved coordinator decision.
+                 * Completed contexts can release resources after caching their outcome.
+                 */
                 continue
             }
             if (!txnInfo.transaction.isIdle()) {

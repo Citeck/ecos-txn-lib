@@ -25,6 +25,7 @@ class TxnManagerRemoteActions(
         register(TmCommitPreparedAction())
         register(TmRollbackTxnAction())
         register(TmGetStatusAction())
+        register(TmJournalPresenceAction())
         register(TmRecoveryCommitAction())
         register(TmRecoveryRollbackAction())
         register(TmCoordinateCommitAction())

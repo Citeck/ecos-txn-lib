@@ -44,3 +44,195 @@ transaction exists, it returns a fresh empty map on each call without starting a
 Do not retain cache maps across action scopes. Keep transaction resources, deferred
 actions, accumulated changes and other lifetime state in `getData`; read-only cache
 invalidation does not clear that state.
+
+## Commit decisions and cleanup
+
+After coordination starts, its coordinator owns commit/rollback decisions. An
+exception from a phase-two request or a journal write does not authorize the
+originator to roll back participants. Local coordination errors are queued for
+recovery, which rereads the stored decision; a lost `beforeCommit` response can
+represent either PREPARING or COMMITTING. Failures before that write is attempted
+still release active resources through rollback, even if recording the rollback
+fails. Delegation records its destination before sending the request.
+
+A partially committed two-phase transaction stays COMMITTING. Recovery retries
+only unfinished prepared resources; successful and read-only resources are not
+committed again. Explicit rollback and disposal cannot reverse COMMITTING, and
+failed disposal retains the manager's live transaction entry. The inactivity
+job preserves unresolved coordinator-owned transactions. Completed contexts can
+release their resources after transferring their outcome to the recovery manager's
+bounded process-local receipts, so a lost acknowledgement remains retryable. Rollback acknowledgements are also journaled
+before successful participant contexts are disposed; failed or uncertain rollbacks
+remain available for retry. Completion actions should be idempotent because retries
+can repeat their dispatch after a lost acknowledgement.
+Without a durable coordinator repository, unresolved commits require explicit
+reconciliation; a failed one-phase commit is never replayed as a two-phase commit.
+
+Register transaction actions and synchronizations in the transaction's serialized
+execution flow. Concurrent registration from another thread during completion is
+not supported. Synchronization flush actions can make their originator an
+actions-only participant, selecting 2PC even when only one remote app has XA
+resources. This preserves callback completion; an optimization must retain that
+completion before omitting such a participant.
+
+## Synchronization and recovery safety
+
+Writable transactions schedule `beforeCompletion` through `BEFORE_COMMIT`, after
+ordinary ordered actions. The root drains newly registered before-commit actions
+before it snapshots participants and writes the 2PC journal. Action ordering is
+re-evaluated after every action, so newly queued ordinary writes run before a
+pending synchronization flush. A synchronization may
+enlist resources in that phase; each registered callback runs once. Resource and
+remote-Xid enlistment is sealed when `PREPARING` or `COMMITTING` starts. Direct
+management callers that bypass the action phase may flush existing resources in
+the fallback callback, but cannot add resources there.
+
+Recovery scans registered storages before changing any branch. It completes all
+visible branches of each requested global transaction, including late branches
+omitted from an older participant's journal snapshot. Other global transactions
+are unaffected. Storage scans must expose all prepared branches available to the
+application; scan errors propagate to the coordinator.
+
+After every registered storage has been enumerated successfully, an absent Xid is
+an idempotent completion: a participant can have committed before its reply was lost
+and then restarted. The same durable commit/rollback decision can be acknowledged
+without replaying application writes. An empty storage registry for explicit nonempty branch IDs without a matching
+receipt still fails; connection/enumeration failures propagate and retain the journal.
+The webapp integration initializes every configured XA datasource before exposing
+transaction RPCs and starting background recovery. Custom integrations must establish
+the same registration invariant. Datasource keys are not persisted in the Xid or 2PC
+journal; source configuration must continue to identify the databases holding the
+prepared branches across restart.
+
+Successful calls and disposed live outcomes are remembered for up to 10,000
+process-local receipts, including global completion markers. These reject known
+opposite decisions and support partial retries, but are not required to acknowledge
+an already completed branch after restart. Recovery never changes a durable COMMIT
+to rollback. A full scan cannot diagnose a removed or redirected datasource or an
+external heuristic outcome; such configuration/administrative changes require separate
+reconciliation rather than interpreting the journal as a replay of application work.
+
+Recovery API version 3 also scans a participant whose journal Xid set is empty,
+using an empty-branch global-transaction marker. Coordinators retain the journal
+when a participant does not support version 3; older recovery APIs can silently
+acknowledge branches they did not discover. Upgrade coordinators as well as
+participants before relying on this repair. The earlier callback phase and
+enlistment guard apply only to upgraded participants; a mixed-version deployment
+cannot guarantee complete participant discovery from old code. An action-only
+participant with an empty snapshot and no XA sources acknowledges its global marker
+after restart; an explicit resource branch still requires a registered source.
+
+
+## Startup cleanup of old prepared XA branches
+
+Once per application startup, the app-ready background job waits one minute and scans
+registered `RecoverableStorage` sources. It considers only global `TxnId.created` dates
+strictly older than 30 days. Recent, future, empty or invalid identifiers are left alone.
+
+The explicitly configured `EcosTxnProps.commitCoordinatorApp` is queried through
+transaction API v3 (`ecos.webapp.txn.commitCoordinatorApp` in the Spring integration).
+An empty coordinator configuration cannot prove authority and returns UNKNOWN, including
+for transactions originating locally. To use a local authoritative repository, explicitly
+configure this application's name as coordinator. The originating app encoded in a TxnId
+is not assumed to own the journal.
+Any existing journal record, including COMMITTING, leaves the branches to ordinary
+recovery. Only a successful explicit ABSENT answer permits rollback under this old-orphan
+policy. A live local transaction or known committed completion receipt also prevents rollback.
+
+Repository providers must opt in with `AuthoritativeTwoPhaseCommitRepo`: their
+`getRecoveryData` must search the complete journal by global ID across all statuses and
+owner instances, and throw on read failures. The emodel repository implements this
+contract. Noop and legacy repository providers cannot prove absence. Mixed deployments
+require API v3 on the coordinator; legacy participants continue using their existing APIs.
+
+Unavailable coordinator, unsupported API, UNKNOWN answer, enumeration/read/rollback
+failure postpone the unfinished sweep for another minute. Every retry checks the journal
+again for remaining prepared branches. A successful sweep ends startup cleanup until the
+next restart; this is not a periodic age-based recovery rule. It covers only registered
+sources and does not infer historical XA decisions from age or from an empty journal
+response of an unqualified repository. Changing coordinator ownership or database scope
+requires operator reconciliation before using that new scope as authoritative for old branches.
+
+Journal lookups run outside the recovery monitor so a slow coordinator cannot hold up
+unrelated completion receipts or ordinary recovery. Before rollback, the monitor is
+reacquired, prepared branches are refreshed, and COMMIT receipts and live local contexts
+are checked again. A refresh failure remains uncertain and schedules a retry.
+
+Before enumeration, a local preflight checks explicit coordinator configuration,
+availability and API capability. An uncertain preflight postpones the attempt without
+scanning sources. This is not journal absence proof: each candidate still needs its own
+version-checked authoritative lookup. The JDBC adapter treats XAER_NOTA after a racing
+completion or another datasource alias as idempotent absence; other XA failures propagate.
+
+Global branch recovery and authoritative journal lookup are introduced together in
+transaction API v3. API v2 does not provide these capabilities.
+
+## Test coverage
+
+Run the complete library suite with `mvn clean verify` on JDK21. The wire protocol tests
+exercise the real transaction client, executor, action dispatcher and JSON serializers
+over an in-memory byte transport, covering published legacy0/1 and structured2/3
+protocols, system-only authorization, malformed requests and transport failures.
+Negotiated legacyv1 remains v1 at both client and dispatcher so prepare ownership is
+preserved; unavailable API negotiation fails before request dispatch. Transaction manager
+calls are recorded at the transport boundary; lifecycle/resource tests remain separate.
+These tests do not replace real PostgreSQL/XA failure injection or deployment checks.
+
+The suite also exercises these contracts:
+
+| Component | Scenarios |
+| --- | --- |
+| XA/JTA adapters | All status mappings, transaction wrapper lifetime, identity-based enlistment, rollback synchronization and original XAException propagation |
+| Java facade | Java-compiled Runnable/Supplier/Consumer overloads, checked exceptions, read-only and new-transaction scopes, parent/MDC restoration, batching and no-manager fallback |
+| Policies and actions | External transaction policy routing, scope restoration on failure, continued callbacks after an action fails and rollback error suppression |
+| Health job | Busy/recent/expired contexts, exact owner/delegated routes, unavailable or failing status lookup, definitive missing owner and retry after disposal failure |
+| Coordinator recovery | Bounded own/global scans, live-context exclusions, instance routes, completion actions, partial acknowledgements and journal failures |
+| Xid serialization | JSON/CBOR binary branches and empty recovery markers; malformed types, format integer overflow and extra tuple members are rejected |
+
+Health decisions run directly with controlled activity timestamps; the tests do not wait
+for minute-long timers. The daemon's real scheduling, shutdown hooks, HTTP middleware
+and database crash/restart behavior require separate integration checks. XA prepare
+votes cover the specified `XA_OK` and `XA_RDONLY` values; invalid provider votes are
+outside that interface contract. Test helpers do not certify a particular JDBC driver.
+The Java MDC check temporarily installs an in-memory MDC adapter and restores the
+original binding in `finally`, because the test logging binding has no MDC storage.
+
+When maintaining tests, give each scenario a distinct contract and observation boundary.
+A wrapper test should verify the exact target, transaction ID, payload and returned result,
+using nonempty payloads and nonzero action IDs/levels. A call-only assertion cannot prove
+argument forwarding. Negative call assertions must match the recorder's full encoding.
+Recovery tests need an actual branch outcome or acknowledgement attempt; an unchanged
+journal alone can also mean recovery never ran. Callback ordering checks must observe the
+resource completion event. Do not retain separate getter smoke tests when a stronger
+lifecycle case already observes the same contract. Similar scenarios at Java, manager,
+resource and wire boundaries may remain when they detect different failures.
+
+A local stand check also ran the current library against PostgreSQL 18.6 and pgjdbc
+42.7.13 using separate participant/coordinator JVMs, real XA through the production
+JDBC factory, HTTP through the transaction client/executor, and the actual emodel
+journal repository backed by SQL. It verified normal 2PC, a coordinator crash after
+persisting COMMITTING followed by all-process restart, and participant failure after
+prepare before its reply. Repeated recovery caused no duplicate effects.
+
+The follow-up fix restores idempotent completion after a participant commits, loses
+its reply and restarts: the coordinator removes COMMITTING after successful recovery,
+with both database effects present exactly once. The harness now invokes the actual
+EcosDataSourceManager/EcosTxnInitializer bootstrap. All configured XA sources are
+registered before any application lookup or transaction endpoint. Each participant
+also configures an alias to the same database; XAER_NOTA after another request or alias
+completed a branch is idempotent, while resource and heuristic errors propagate.
+
+Startup checks cover authoritative ABSENT/PRESENT, coordinator unavailable, lookup
+HTTP errors, negotiated APIv2, live/young transactions, strict 30-day boundary and
+one successful sweep per startup. Enumeration errors preserve prepared branches and
+allow retries. Ordinary recovery with an artificially cleared registry or a failed
+source scan retains the unacknowledged participant in the SQL journal; restoring the
+source completes it once. Missing Xid after a successful complete scan is acknowledged.
+
+Task `ecos-txn-lib-local-stand-20261020` retains harness, source/class provenance and
+SQL/XA observations. Current worker readiness callbacks are explicitly disabled and
+the absence of a transaction-manager daemon is asserted at startup; controlled clocks
+exercise the real sweep without claiming natural daemon scheduling, shared Spring/JWT
+middleware or ZooKeeper/distributed-lock certification. Earlier reports describe the
+pre-fix receipt limitation and an older harness readiness assumption, superseded by
+the task's follow-up evidence. No release or deployment is implied by local checks.

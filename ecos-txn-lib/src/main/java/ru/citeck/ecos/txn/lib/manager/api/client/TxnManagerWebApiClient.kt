@@ -3,6 +3,7 @@ package ru.citeck.ecos.txn.lib.manager.api.client
 import io.github.oshai.kotlinlogging.KotlinLogging
 import ru.citeck.ecos.txn.lib.TxnContext
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.commit.repo.JournalPresence
 import ru.citeck.ecos.txn.lib.manager.api.server.TxnManagerWebExecutor
 import ru.citeck.ecos.txn.lib.manager.api.server.action.*
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
@@ -92,6 +93,18 @@ class TxnManagerWebApiClient(
         }
     }
 
+    override fun getJournalPresence(app: String, txnId: TxnId): JournalPresence {
+
+        if (isApiVersionSupported(app, TxnManagerRemoteApiClient.JOURNAL_PRESENCE_VER) != ApiVersionRes.SUPPORTED) {
+            return JournalPresence.UNKNOWN
+        }
+        val body = TmJournalPresenceAction.Data(app, txnId)
+        return execRequest(app, TmJournalPresenceAction.TYPE, body) { version, res ->
+            check(version >= TxnManagerRemoteApiClient.JOURNAL_PRESENCE_VER) { "Journal lookup API unavailable" }
+            res.getBodyReader().readDto(TmJournalPresenceAction.Resp::class.java).presence
+        }
+    }
+
     override fun getTxnStatus(app: String, txnId: TxnId): TransactionStatus {
         val body = TmGetStatusAction.Data(txnId)
         return execRequest(app, TmGetStatusAction.TYPE, body) { _, res ->
@@ -125,6 +138,7 @@ class TxnManagerWebApiClient(
             TxnManagerWebExecutor.PATH,
             TxnManagerRemoteApiClient.CURRENT_API_VERSION
         )
+        check(targetVersion >= 0) { "Transaction API is unavailable for app '$app': $targetVersion" }
         log.debug {
             "[${TxnContext.getTxnOrNull()?.getId() ?: "no-txn"}]" +
                 " Exec request to app '$app' type '$type' body '$body' apiVer: '$targetVersion'"
@@ -139,14 +153,21 @@ class TxnManagerWebApiClient(
                 .body { it.writeDto(body) }
             req.executeSync { result.invoke(targetVersion, it) }
         } else {
-            execV0Request(app, type, body) { result.invoke(0, it) }
+            execV0Request(app, type, body, targetVersion) { result.invoke(targetVersion, it) }
         }
     }
 
-    private fun <T> execV0Request(appName: String, type: String, body: Any, result: (EcosWebClientResp) -> T): T {
+    private fun <T> execV0Request(
+        appName: String,
+        type: String,
+        body: Any,
+        version: Int,
+        result: (EcosWebClientResp) -> T
+    ): T {
 
         val req = webClient.newRequest()
             .targetApp(appName)
+            .version(version)
             .path(TxnManagerWebExecutor.PATH)
             .header(HEADER_TYPE, type)
 

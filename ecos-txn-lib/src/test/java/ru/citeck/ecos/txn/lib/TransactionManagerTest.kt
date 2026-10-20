@@ -228,7 +228,7 @@ class TransactionManagerTest {
         TxnContext.doInTxn {
             val txnId = TxnContext.getTxn().getId()
             TxnContext.getTxn().getOrAddRes("r0") { _, _ ->
-                TestResource("r0", txnId, CopyOnWriteArrayList())
+                TestResource("r0", txnId, result)
             }
             TxnContext.doAfterCommit(0f, false) {
                 result.add("afterCommit")
@@ -237,7 +237,8 @@ class TransactionManagerTest {
         }
 
         assertThat(latch.await(5, TimeUnit.SECONDS)).isTrue
-        assertThat(result).containsExactly("afterCommit")
+        assertThat(result).contains("r0:onePhaseCommit", "afterCommit")
+        assertThat(result.indexOf("afterCommit")).isGreaterThan(result.indexOf("r0:onePhaseCommit"))
     }
 
     @Test
@@ -248,7 +249,7 @@ class TransactionManagerTest {
             TxnContext.doInTxn {
                 val txnId = TxnContext.getTxn().getId()
                 TxnContext.getTxn().getOrAddRes("r0") { _, _ ->
-                    TestResource("r0", txnId, CopyOnWriteArrayList())
+                    TestResource("r0", txnId, result)
                 }
                 TxnContext.doAfterRollback(0f, false) {
                     result.add("afterRollback")
@@ -257,7 +258,8 @@ class TransactionManagerTest {
             }
         }.hasMessage("boom")
 
-        assertThat(result).containsExactly("afterRollback")
+        assertThat(result).contains("r0:rollback", "afterRollback")
+        assertThat(result.indexOf("afterRollback")).isGreaterThan(result.indexOf("r0:rollback"))
     }
 
     @Test

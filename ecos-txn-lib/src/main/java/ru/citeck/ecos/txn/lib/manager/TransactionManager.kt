@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.manager
 
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.commit.repo.JournalPresence
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManager
 import ru.citeck.ecos.txn.lib.manager.work.ExtTxnWorkContext
 import ru.citeck.ecos.txn.lib.transaction.ManagedTransaction
@@ -146,4 +147,12 @@ interface TransactionManager {
      * Shuts down the transaction manager.
      */
     fun shutdown()
+
+    /**
+     * Checks the entire authoritative journal, regardless of recovery status.
+     * Implementations without this capability must not assert absence.
+     */
+    fun getJournalPresence(coordinatorApp: String, txnId: TxnId): JournalPresence {
+        return JournalPresence.UNKNOWN
+    }
 }

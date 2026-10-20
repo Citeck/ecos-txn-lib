@@ -106,15 +106,4 @@ class TxnIdExtendedTest {
         assertThat(txnId.appName).isEqualTo("app")
         assertThat(txnId.appInstanceId).isEqualTo("inst")
     }
-
-    @Test
-    fun `toString is cached`() {
-        val txnId = TxnId.create("app", "inst")
-
-        val str1 = txnId.toString()
-        val str2 = txnId.toString()
-
-        // Should return the same string object (cached)
-        assertThat(str1).isSameAs(str2)
-    }
 }

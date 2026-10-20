@@ -29,7 +29,7 @@ class TxnXidDeserializer : StdDeserializer<EcosXid>(EcosXid::class.java) {
                 if (formatIdToken != JsonToken.VALUE_NUMBER_INT) {
                     return ctxt.handleUnexpectedToken(EcosXid::class.java, p) as EcosXid
                 }
-                val formatId = p.numberValue.toInt()
+                val formatId = p.intValue
                 val txnIdToken = p.nextToken()
                 if (txnIdToken != JsonToken.VALUE_STRING) {
                     return ctxt.handleUnexpectedToken(EcosXid::class.java, p) as EcosXid
@@ -37,7 +37,9 @@ class TxnXidDeserializer : StdDeserializer<EcosXid>(EcosXid::class.java) {
                 val txnId = TxnId.valueOf(p.text)
                 p.nextToken()
                 val branchIdBytes = p.binaryValue
-                p.nextToken() // end array
+                if (p.nextToken() != JsonToken.END_ARRAY) {
+                    return ctxt.handleUnexpectedToken(EcosXid::class.java, p) as EcosXid
+                }
                 return EcosXid.create(formatId, txnId, branchIdBytes)
             }
             else -> {

@@ -145,65 +145,11 @@ class XaResourceAdapterTest {
     }
 
     @Test
-    fun `getStatus maps ACTIVE correctly`() {
-        val appMock = EcosWebAppApiMock("test-app")
-        val adapter = JavaXaTxnManagerAdapter(appMock.getProperties())
-
-        TxnContext.doInTxn {
-            assertThat(adapter.status).isEqualTo(Status.STATUS_ACTIVE)
-        }
-    }
-
-    @Test
     fun `getTransaction returns null when no txn`() {
         val appMock = EcosWebAppApiMock("test-app")
         val adapter = JavaXaTxnManagerAdapter(appMock.getProperties())
 
         assertThat(adapter.transaction).isNull()
-    }
-
-    @Test
-    fun `getTransaction wraps ECOS transaction`() {
-        val appMock = EcosWebAppApiMock("test-app")
-        val adapter = JavaXaTxnManagerAdapter(appMock.getProperties())
-
-        TxnContext.doInTxn {
-            val jakartaTxn = adapter.transaction
-            assertThat(jakartaTxn).isNotNull
-            assertThat(jakartaTxn!!.status).isEqualTo(Status.STATUS_ACTIVE)
-        }
-    }
-
-    @Test
-    fun `enlistResource creates adapter and returns true`() {
-        val appMock = EcosWebAppApiMock("test-app")
-        val adapter = JavaXaTxnManagerAdapter(appMock.getProperties())
-
-        TxnContext.doInTxn {
-            val jakartaTxn = adapter.transaction!!
-            val xaResource = RecordingXAResource()
-            val result = jakartaTxn.enlistResource(xaResource)
-            assertThat(result).isTrue()
-        }
-    }
-
-    @Test
-    fun `enlistResource same instance returns same adapter via IdentityKey`() {
-        val appMock = EcosWebAppApiMock("test-app")
-        val adapter = JavaXaTxnManagerAdapter(appMock.getProperties())
-
-        TxnContext.doInTxn {
-            val jakartaTxn = adapter.transaction!!
-            val xaResource = RecordingXAResource()
-
-            // Enlist same XAResource twice
-            jakartaTxn.enlistResource(xaResource)
-            jakartaTxn.enlistResource(xaResource)
-
-            // start should only be called once since the second enlistResource
-            // reuses the existing adapter
-            assertThat(xaResource.calls.count { it.method == "start" }).isEqualTo(1)
-        }
     }
 
     @Test

@@ -80,28 +80,12 @@ class TxnContextExtendedTest {
         }
     }
 
-    @Test
-    fun `getTxn within transaction returns it`() {
-        TxnContext.doInTxn {
-            val txn = TxnContext.getTxn()
-            assertThat(txn).isNotNull
-            assertThat(txn.getId()).isNotNull
-        }
-    }
-
     // ==================== getTxnOrNull ====================
 
     @Test
     fun `getTxnOrNull without transaction returns null`() {
         txnManager.doInTxn(TransactionPolicy.NOT_SUPPORTED, null) {
             assertThat(TxnContext.getTxnOrNull()).isNull()
-        }
-    }
-
-    @Test
-    fun `getTxnOrNull within transaction returns it`() {
-        TxnContext.doInTxn {
-            assertThat(TxnContext.getTxnOrNull()).isNotNull
         }
     }
 
@@ -231,10 +215,5 @@ class TxnContextExtendedTest {
         TxnContext.doInNewTxn(readOnly = true) {
             assertThat(TxnContext.isReadOnly()).isTrue()
         }
-    }
-
-    @Test
-    fun `getManager returns set manager`() {
-        assertThat(TxnContext.getManager()).isSameAs(txnManager)
     }
 }

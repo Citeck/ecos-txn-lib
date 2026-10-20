@@ -10,16 +10,20 @@ import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.commit.CommitCoordinator
 import ru.citeck.ecos.txn.lib.commit.CommitCoordinatorImpl
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.commit.repo.AuthoritativeTwoPhaseCommitRepo
+import ru.citeck.ecos.txn.lib.commit.repo.JournalPresence
 import ru.citeck.ecos.txn.lib.commit.repo.NoopTwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitRepo
 import ru.citeck.ecos.txn.lib.manager.action.TxnActionsContainer
 import ru.citeck.ecos.txn.lib.manager.action.TxnActionsManager
+import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.CurrentAppClientWrapper
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerWebApiClient
 import ru.citeck.ecos.txn.lib.manager.obs.TxnActionObsContext
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManager
 import ru.citeck.ecos.txn.lib.manager.recovery.RecoveryManagerImpl
+import ru.citeck.ecos.txn.lib.manager.recovery.StartupOrphanRecovery
 import ru.citeck.ecos.txn.lib.manager.work.AlwaysStatelessExtTxnWorkContext
 import ru.citeck.ecos.txn.lib.manager.work.ExtTxnWorkContext
 import ru.citeck.ecos.txn.lib.transaction.*
@@ -51,7 +55,8 @@ class TransactionManagerImpl : TransactionManager {
     private lateinit var webAppProps: EcosWebAppProps
     private lateinit var txnActionsExecutor: EcosTaskExecutorApi
     private lateinit var txnManagerJob: TxnManagerJob
-    private lateinit var recoveryManager: RecoveryManager
+    private lateinit var recoveryManager: RecoveryManagerImpl
+    private lateinit var twoPhaseCommitRepo: TwoPhaseCommitRepo
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
     internal val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
@@ -65,6 +70,7 @@ class TransactionManagerImpl : TransactionManager {
         remoteClient: TxnManagerRemoteApiClient? = null
     ) {
         this.props = props
+        this.twoPhaseCommitRepo = twoPhaseCommitRepo
         this.webAppApi = webAppApi
         this.webAppProps = webAppApi.getProperties()
         this.txnActionsExecutor = webAppApi.getTasksApi().getExecutor("txn-actions")
@@ -83,6 +89,48 @@ class TransactionManagerImpl : TransactionManager {
         this.recoveryManager = RecoveryManagerImpl()
 
         webAppApi.doWhenAppReady { this.txnManagerJob.start() }
+    }
+
+    override fun getJournalPresence(coordinatorApp: String, txnId: TxnId): JournalPresence {
+
+        val appRefs = setOf(webAppProps.appName, webAppProps.appName + ":" + webAppProps.appInstanceId)
+        if (props.commitCoordinatorApp.isBlank() || coordinatorApp !in appRefs ||
+            props.commitCoordinatorApp !in appRefs ||
+            twoPhaseCommitRepo !is AuthoritativeTwoPhaseCommitRepo || txnId.isEmpty()
+        ) {
+            return JournalPresence.UNKNOWN
+        }
+        if (transactionsById.containsKey(txnId) || twoPhaseCommitRepo.getRecoveryData(txnId) != null) {
+            return JournalPresence.PRESENT
+        }
+        return JournalPresence.ABSENT
+    }
+
+    internal fun createStartupOrphanRecovery(): StartupOrphanRecovery {
+
+        val coordinator = props.commitCoordinatorApp.ifBlank { webAppProps.appName }
+        return StartupOrphanRecovery(
+            recoveryManager,
+            canAttempt = {
+                props.commitCoordinatorApp.isNotBlank() && remoteClient.isAppAvailable(coordinator) &&
+                    remoteClient.isApiVersionSupported(coordinator, TxnManagerRemoteApiClient.JOURNAL_PRESENCE_VER) ==
+                    ApiVersionRes.SUPPORTED
+            },
+            isTransactionActive = { transactionsById.containsKey(it) }
+        ) { txnId ->
+            if (props.commitCoordinatorApp.isBlank()) {
+                JournalPresence.UNKNOWN
+            } else if (transactionsById.containsKey(txnId)) {
+                JournalPresence.PRESENT
+            } else if (!remoteClient.isAppAvailable(coordinator) ||
+                remoteClient.isApiVersionSupported(coordinator, TxnManagerRemoteApiClient.JOURNAL_PRESENCE_VER) !=
+                ApiVersionRes.SUPPORTED
+            ) {
+                JournalPresence.UNKNOWN
+            } else {
+                remoteClient.getJournalPresence(coordinator, txnId)
+            }
+        }
     }
 
     override fun coordinateCommit(txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
@@ -253,6 +301,7 @@ class TransactionManagerImpl : TransactionManager {
 
         val result = doWithinTxn(transaction, readOnly, txnManagerContext) {
 
+            var coordinationStarted = false
             try {
                 transactionsById[newTxnId] = TransactionInfo(transaction)
                 transaction.start()
@@ -306,6 +355,7 @@ class TransactionManagerImpl : TransactionManager {
                             twopcActions[TxnActionType.AFTER_ROLLBACK] = afterRollbackActions
                         }
                         val twopcCommitData = TxnCommitData(xidsByApp, twopcActions)
+                        coordinationStarted = true
                         commitCoordinator.commitRoot(newTxnId, twopcCommitData, txnLevel)
 
                         actionRes
@@ -313,6 +363,9 @@ class TransactionManagerImpl : TransactionManager {
                 }
             } catch (error: Throwable) {
                 AuthContext.runAsSystem {
+                    if (coordinationStarted) {
+                        return@runAsSystem
+                    }
                     if (readOnly || transaction.getStatus() == TransactionStatus.COMMITTED ||
                         transaction.getStatus() == TransactionStatus.ROLLED_BACK
                     ) {
@@ -426,7 +479,17 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     override fun dispose(txnId: TxnId) {
-        transactionsById.remove(txnId)?.transaction?.dispose()
+        val info = transactionsById[txnId] ?: return
+        val status = info.transaction.getStatus()
+        if (status == TransactionStatus.COMMITTED || status == TransactionStatus.ROLLED_BACK) {
+            recoveryManager.rememberCompleted(
+                txnId,
+                info.transaction.getResources().map { it.getXid() },
+                status == TransactionStatus.COMMITTED
+            )
+        }
+        info.transaction.dispose()
+        transactionsById.remove(txnId, info)
     }
 
     override fun getStatus(txnId: TxnId): TransactionStatus {

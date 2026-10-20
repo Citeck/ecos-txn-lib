@@ -69,7 +69,12 @@ interface TwoPhaseCommitRepo {
      * and it needs to recover and continue a previously incomplete transactions.
      *
      * @param txnId Unique identifier of the transaction.
-     * @return The recovery data for the transaction, or `null` if no data is available for the given transaction ID.
+     * Implementations must query the complete authoritative journal by global ID,
+     * including every status and owner instance. A failed or incomplete lookup must
+     * throw, never return null: startup orphan recovery treats null as definitive absence.
+     * Noop repositories cannot provide this proof.
+     *
+     * @return The journal data, or `null` only when no record exists for the given transaction ID.
      */
     fun getRecoveryData(txnId: TxnId): RecoveryData?
 

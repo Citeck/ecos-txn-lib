@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.manager.api.client
 
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.commit.repo.JournalPresence
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
@@ -16,12 +17,23 @@ interface TxnManagerRemoteApiClient {
         /**
          * Current API version used by the client.
          */
-        const val CURRENT_API_VERSION = 2
+        const val CURRENT_API_VERSION = 3
 
         /**
          * Version of the coordinate commit API.
          */
         const val COORDINATE_COMMIT_VER = 2
+
+        /**
+         * Recovery scans all visible branches of a global transaction and retains
+         * unknown outcomes instead of acknowledging missing branches.
+         */
+        const val GLOBAL_RECOVERY_VER = 3
+
+        /**
+         * Authoritative journal lookup ships with global recovery in the same API version.
+         */
+        const val JOURNAL_PRESENCE_VER = GLOBAL_RECOVERY_VER
     }
 
     /**
@@ -118,6 +130,13 @@ interface TxnManagerRemoteApiClient {
      * @return The current status of the transaction.
      */
     fun getTxnStatus(app: String, txnId: TxnId): TransactionStatus
+
+    /**
+     * Missing or unsupported capability never proves journal absence.
+     */
+    fun getJournalPresence(app: String, txnId: TxnId): JournalPresence {
+        return JournalPresence.UNKNOWN
+    }
 
     /**
      * Checks if the specified application is available for API calls.

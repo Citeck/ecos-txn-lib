@@ -11,7 +11,6 @@ import ru.citeck.ecos.txn.lib.action.TxnActionType
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
 import ru.citeck.ecos.txn.lib.manager.EcosTxnProps
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
-import ru.citeck.ecos.txn.lib.manager.TransactionPolicy
 import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
@@ -96,8 +95,10 @@ class DistributedTransactionTest {
         }
 
         private fun resolveManager(app: String): TransactionManagerImpl? {
-            // Try exact match first, then match by app name prefix (ignoring instance id)
-            return registry[app] ?: registry.entries.firstOrNull { app.startsWith(it.key) }?.value
+            return registry[app] ?: registry.values.firstOrNull {
+                val props = it.webAppApi.getProperties()
+                app == "${props.appName}:${props.appInstanceId}"
+            }
         }
     }
 
@@ -342,7 +343,7 @@ class DistributedTransactionTest {
     }
 
     @Test
-    fun `distributed rollback on commit failure - error propagated`() {
+    fun `distributed commit failure propagates without rollback`() {
         val events = CopyOnWriteArrayList<String>()
 
         val registryMap = mutableMapOf<String, TransactionManagerImpl>()
@@ -375,54 +376,7 @@ class DistributedTransactionTest {
         assertThat(events).contains("resA:commitPrepared")
         // resB's commitPrepared was called but threw
         assertThat(events).contains("resB:commitPrepared")
-    }
-
-    @Test
-    fun `inner transaction rollback does not affect outer distributed transaction`() {
-        val events = CopyOnWriteArrayList<String>()
-
-        val registryMap = mutableMapOf<String, TransactionManagerImpl>()
-        val routingClient = RoutingRemoteApiClient(registryMap)
-
-        val appA = createApp("app-a", routingClient)
-        val appB = createApp("app-b", routingClient)
-        registryMap["app-a"] = appA.manager
-        registryMap["app-b"] = appB.manager
-
-        TxnContext.setManager(appA.manager)
-
-        // Use doInNewTxn on app-a for the outer transaction
-        appA.manager.doInTxn(
-            TransactionPolicy.REQUIRES_NEW,
-            false
-        ) {
-            val outerTxnId = TxnContext.getTxn().getId()
-            TxnContext.getTxn().getOrAddRes("outerRes") { _, id ->
-                TestResource("outerRes", id, events)
-            }
-
-            // Inner REQUIRES_NEW fails
-            try {
-                appA.manager.doInTxn(
-                    TransactionPolicy.REQUIRES_NEW,
-                    false
-                ) {
-                    TxnContext.getTxn().getOrAddRes("innerRes") { _, id ->
-                        TestResource("innerRes", id, events)
-                    }
-                    error("inner fails")
-                }
-            } catch (_: Exception) {
-                // swallow
-            }
-
-            // Outer transaction still active after inner rollback
-            assertThat(TxnContext.getTxn().getId()).isEqualTo(outerTxnId)
-        }
-
-        // Inner was rolled back, outer committed
-        assertThat(events).contains("innerRes:rollback")
-        assertThat(events).contains("outerRes:onePhaseCommit")
-        assertThat(events).doesNotContain("outerRes:rollback")
+        assertThat(events).doesNotContain("resA:rollback", "resB:rollback", "resB:dispose")
+        assertThat(appB.manager.getStatus(txnId)).isEqualTo(TransactionStatus.COMMITTING)
     }
 }

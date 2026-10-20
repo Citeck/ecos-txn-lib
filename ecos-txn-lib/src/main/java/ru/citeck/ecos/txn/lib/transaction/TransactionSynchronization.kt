@@ -3,8 +3,9 @@ package ru.citeck.ecos.txn.lib.transaction
 interface TransactionSynchronization {
 
     /**
-     * Invoked before transaction commit/rollback.
-     * Can perform resource cleanup *before* transaction completion.
+     * Invoked once before commit. Writable managed transactions run this callback
+     * as a before-commit action, while resources may still be enlisted and before
+     * the coordinator persists its participant snapshot. Not invoked on rollback.
      */
     fun beforeCompletion() {}
 

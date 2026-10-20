@@ -219,10 +219,13 @@ class TransactionImpl(
             logDebug { "Transaction is already committed" }
             return
         }
-        checkStatus(TransactionStatus.PREPARED)
+        checkStatus(TransactionStatus.PREPARED, TransactionStatus.COMMITTING)
+        check(resources.all { it.wasPreparedToCommit || it.readOnlyOnPrepare }) {
+            "[$txnId] An uncertain one-phase commit cannot be retried as a prepared commit"
+        }
         setStatus(TransactionStatus.COMMITTING)
         for (resData in resources) {
-            if (!resData.readOnlyOnPrepare) {
+            if (!resData.committed && !resData.readOnlyOnPrepare) {
                 resData.resource.commitPrepared()
             }
             resData.committed = true
@@ -271,9 +274,9 @@ class TransactionImpl(
             TransactionStatus.ACTIVE,
             TransactionStatus.PREPARING,
             TransactionStatus.PREPARED,
-            TransactionStatus.COMMITTING,
             TransactionStatus.ROLLING_BACK
         )
+        val wasActive = txnStatus == TransactionStatus.ACTIVE
         setStatus(TransactionStatus.ROLLING_BACK)
         var exception = cause
         for (resData in resources) {
@@ -283,7 +286,7 @@ class TransactionImpl(
                     resData.rolledBack = true
                 } catch (e: Throwable) {
                     val errorMsg = "Error while rollback. Txn: $txnId Resource: '${resData.name}'"
-                    if (resData.wasPreparedToCommit) {
+                    if (resData.wasPreparedToCommit || !wasActive) {
                         if (exception == null) {
                             exception = RuntimeException(errorMsg)
                         }
@@ -307,7 +310,34 @@ class TransactionImpl(
 
     override fun registerSync(sync: TransactionSynchronization) {
         checkStatus(TransactionStatus.ACTIVE)
-        synchronizations.add(sync)
+        val once = object : TransactionSynchronization {
+            private var beforeCalled = false
+
+            override fun beforeCompletion() {
+                if (!beforeCalled) {
+                    beforeCalled = true
+                    sync.beforeCompletion()
+                }
+            }
+
+            override fun afterCompletion(status: TransactionStatus) {
+                sync.afterCompletion(status)
+            }
+        }
+
+        /**
+         * Flush while participant discovery is open. Action results, including new
+         * Xids, reach the root before its 2PC snapshot. A nested read-only scope
+         * must not suppress the enclosing writable transaction's callback.
+         */
+        if (!baseReadOnly && txnManagerContext !== EmptyTxnManagerContext) {
+            addAction(TxnActionType.BEFORE_COMMIT, Float.MAX_VALUE) {
+                micrometerContext.createObs(
+                    EcosTxnSyncObsContext.BeforeCompletion(listOf(once), this)
+                ).observe { once.beforeCompletion() }
+            }
+        }
+        synchronizations.add(once)
     }
 
     private fun checkStatus(expectedStatus: TransactionStatus) {
@@ -335,6 +365,9 @@ class TransactionImpl(
     }
 
     override fun dispose() {
+        check(txnStatus != TransactionStatus.COMMITTING) {
+            "[$txnId] Commit is pending; retain the transaction for recovery"
+        }
         clearReadOnlyCaches()
         if (isEmpty()) {
             setStatus(TransactionStatus.DISPOSED)
@@ -414,7 +447,15 @@ class TransactionImpl(
             return
         }
         updateLastActiveTime()
-        if (newStatus == TransactionStatus.PREPARING || newStatus == TransactionStatus.COMMITTING) {
+        val previousStatus = this.txnStatus
+        /**
+         * Seal enlistment before the fallback callback. A new resource here would
+         * be absent from the durable journal if the prepare response were lost.
+         */
+        this.txnStatus = newStatus
+        if (previousStatus == TransactionStatus.ACTIVE &&
+            (newStatus == TransactionStatus.PREPARING || newStatus == TransactionStatus.COMMITTING)
+        ) {
             micrometerContext.createObs(
                 EcosTxnSyncObsContext.BeforeCompletion(synchronizations, this)
             ).observe {
@@ -423,8 +464,7 @@ class TransactionImpl(
                 }
             }
         }
-        logDebug { "Update status ${this.txnStatus} -> $newStatus" }
-        this.txnStatus = newStatus
+        logDebug { "Update status $previousStatus -> $newStatus" }
         if (this.txnStatus == TransactionStatus.ROLLED_BACK || this.txnStatus == TransactionStatus.COMMITTED) {
             micrometerContext.createObs(
                 EcosTxnSyncObsContext.AfterCompletion(synchronizations, this)

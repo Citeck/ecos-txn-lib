@@ -214,17 +214,19 @@ class TxnManagerRemoteActionsTest {
     }
 
     @Test
-    fun `execute dispatches recovery-commit and recovery-rollback`() {
-        // recovery-commit with no matching txn or storage - should not throw
+    fun `execute propagates recovery uncertainty instead of acknowledging missing storage`() {
         val txnId = TxnId.create("test-app", "test-instance")
         val xid = EcosXid.create(txnId, "test-app", "test-instance")
 
         val commitData = DataValue.create(TmRecoveryCommitAction.Data(txnId, listOf(xid)))
-        // No exception - recovery commit with unknown xids is a no-op
-        remoteActions.execute(TmRecoveryCommitAction.TYPE, commitData, 2)
+        assertThatThrownBy {
+            remoteActions.execute(TmRecoveryCommitAction.TYPE, commitData, 2)
+        }.hasMessageContaining("No recoverable storages")
 
         val rollbackData = DataValue.create(TmRecoveryRollbackAction.Data(txnId, listOf(xid)))
-        remoteActions.execute(TmRecoveryRollbackAction.TYPE, rollbackData, 2)
+        assertThatThrownBy {
+            remoteActions.execute(TmRecoveryRollbackAction.TYPE, rollbackData, 2)
+        }.hasMessageContaining("No recoverable storages")
     }
 
     @Test

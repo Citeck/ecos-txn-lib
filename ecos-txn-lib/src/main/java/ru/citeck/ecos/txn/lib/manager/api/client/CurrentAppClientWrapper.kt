@@ -1,6 +1,7 @@
 package ru.citeck.ecos.txn.lib.manager.api.client
 
 import ru.citeck.ecos.txn.lib.commit.TxnCommitData
+import ru.citeck.ecos.txn.lib.commit.repo.JournalPresence
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
@@ -84,6 +85,15 @@ class CurrentAppClientWrapper(
             manager.recoveryRollback(txnId, xids)
         } else {
             impl.recoveryRollback(app, txnId, xids)
+        }
+    }
+
+    override fun getJournalPresence(app: String, txnId: TxnId): JournalPresence {
+
+        return if (isCurrentApp(app)) {
+            manager.getJournalPresence(app, txnId)
+        } else {
+            impl.getJournalPresence(app, txnId)
         }
     }
 

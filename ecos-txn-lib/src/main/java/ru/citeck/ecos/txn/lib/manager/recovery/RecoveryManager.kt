@@ -13,6 +13,9 @@ interface RecoveryManager {
      * Commits the specified collection of prepared Xid's.
      * This method ensures that the resources associated with the given Xid's are committed
      * as part of the recovery process, typically after a system failure or restart.
+     * All visible branches of the requested global transactions are included.
+     * An unknown missing branch or an unavailable storage scan fails recovery;
+     * callers must retain the durable coordinator decision on failure.
      *
      * @param xids A collection of `EcosXid` instances representing the prepared resources to be committed.
      */
@@ -22,6 +25,9 @@ interface RecoveryManager {
      * Rolls back the specified collection of prepared Xid's.
      * This method undoes the preparation of the resources associated with the given Xid's,
      * rolling them back to maintain consistency during the recovery process.
+     * All visible branches of the requested global transactions are included.
+     * An unknown missing branch or an unavailable storage scan fails recovery;
+     * callers must retain the durable coordinator decision on failure.
      *
      * @param xids A collection of `EcosXid` instances representing the prepared resources to be rolled back.
      */

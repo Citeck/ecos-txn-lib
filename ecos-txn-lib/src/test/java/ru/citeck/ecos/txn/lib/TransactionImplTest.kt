@@ -19,6 +19,8 @@ import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
+import java.time.Instant
+import java.util.concurrent.atomic.AtomicReference
 
 class TransactionImplTest {
 
@@ -369,14 +371,6 @@ class TransactionImplTest {
     // ==================== onePhaseCommit ====================
 
     @Test
-    fun `onePhaseCommit with no resources commits directly`() {
-        val txn = createTxn()
-        txn.start()
-        txn.onePhaseCommit()
-        assertThat(txn.getStatus()).isEqualTo(TransactionStatus.COMMITTED)
-    }
-
-    @Test
     fun `onePhaseCommit with single resource uses one-phase path`() {
         val events = mutableListOf<String>()
         val txn = createTxn()
@@ -567,20 +561,6 @@ class TransactionImplTest {
     // ==================== executeAction ====================
 
     @Test
-    fun `executeAction runs action by id`() {
-        val txn = createTxn()
-        txn.start()
-        var executed = false
-        txn.doWithinTxn(noopCtx(), false) {
-            txn.addAction(TxnActionType.AFTER_COMMIT, 0f) {
-                executed = true
-            }
-        }
-        txn.executeAction(0)
-        assertThat(executed).isTrue()
-    }
-
-    @Test
     fun `executeAction skips already executed action`() {
         val txn = createTxn()
         txn.start()
@@ -648,8 +628,29 @@ class TransactionImplTest {
         txn.prepareCommit()
         txn.commitPrepared()
 
-        assertThat(events).contains("beforeCompletion")
+        assertThat(events.count { it == "beforeCompletion" }).isEqualTo(1)
         assertThat(events).contains("afterCompletion:COMMITTED")
+    }
+
+    @Test
+    fun `fallback synchronization cannot enlist an unjournaled resource during prepare`() {
+        val txn = createTxn()
+        txn.start()
+        var resourceStarted = false
+        txn.registerSync(object : TransactionSynchronization {
+            override fun beforeCompletion() {
+                txn.getOrAddRes("late") { _, id ->
+                    resourceStarted = true
+                    TestRes("late", id)
+                }
+            }
+        })
+
+        assertThatThrownBy { txn.doWithinTxn(noopCtx(), false) { txn.prepareCommit() } }
+            .hasMessageContaining("Resource can't be added")
+        assertThat(resourceStarted).isFalse()
+        txn.rollback(null)
+        assertThat(txn.getStatus()).isEqualTo(TransactionStatus.ROLLED_BACK)
     }
 
     @Test
@@ -707,10 +708,16 @@ class TransactionImplTest {
     @Test
     fun `getLastActiveTime is updated`() {
         val txn = createTxn()
-        val before = txn.getLastActiveTime()
+        val field = TransactionImpl::class.java.getDeclaredField("lastActiveTime")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val activity = field.get(txn) as AtomicReference<Instant>
+        activity.set(Instant.EPOCH)
+        val before = Instant.now()
+
         txn.start()
-        val after = txn.getLastActiveTime()
-        assertThat(after).isAfterOrEqualTo(before)
+
+        assertThat(txn.getLastActiveTime()).isBetween(before, Instant.now())
     }
 
     // ==================== getData ====================

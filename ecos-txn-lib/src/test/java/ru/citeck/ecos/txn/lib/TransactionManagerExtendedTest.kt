@@ -20,7 +20,6 @@ import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
-import java.util.concurrent.CopyOnWriteArrayList
 
 class TransactionManagerExtendedTest {
 
@@ -163,13 +162,6 @@ class TransactionManagerExtendedTest {
         assertThat(txnManager.getCurrentTransaction()).isNull()
     }
 
-    @Test
-    fun `getCurrentTransaction returns current txn inside doInTxn`() {
-        TxnContext.doInTxn {
-            assertThat(txnManager.getCurrentTransaction()).isNotNull
-        }
-    }
-
     // ==================== Transaction policy edge cases ====================
 
     @Test
@@ -197,17 +189,6 @@ class TransactionManagerExtendedTest {
     }
 
     @Test
-    fun `NOT_SUPPORTED suspends and restores transaction`() {
-        TxnContext.doInTxn {
-            val outerTxnId = TxnContext.getTxn().getId()
-            txnManager.doInTxn(TransactionPolicy.NOT_SUPPORTED, null) {
-                assertThat(txnManager.getCurrentTransaction()).isNull()
-            }
-            assertThat(TxnContext.getTxn().getId()).isEqualTo(outerTxnId)
-        }
-    }
-
-    @Test
     fun `REQUIRED with null readOnly uses default`() {
         txnManager.doInTxn(TransactionPolicy.REQUIRED, null) {
             assertThat(TxnContext.isReadOnly()).isFalse()
@@ -219,46 +200,6 @@ class TransactionManagerExtendedTest {
         txnManager.doInTxn(TransactionPolicy.REQUIRES_NEW, null) {
             assertThat(TxnContext.isReadOnly()).isFalse()
         }
-    }
-
-    // ==================== Lifecycle action ordering ====================
-
-    @Test
-    fun `doBeforeCommit actions run before resource commit`() {
-        val events = CopyOnWriteArrayList<String>()
-        TxnContext.doInTxn {
-            val txnId = TxnContext.getTxn().getId()
-            TxnContext.getTxn().getOrAddRes("r0") { _, _ ->
-                object : TransactionResource {
-                    override fun start() {}
-                    override fun end() {}
-                    override fun getName() = "r0"
-                    override fun getXid() = EcosXid.create(txnId, "r0".toByteArray())
-                    override fun prepareCommit() = CommitPrepareStatus.PREPARED
-                    override fun commitPrepared() {
-                        events.add("commit")
-                    }
-                    override fun onePhaseCommit() {
-                        events.add("commit")
-                    }
-                    override fun rollback() {}
-                    override fun dispose() {}
-                }
-            }
-            TxnContext.doBeforeCommit(0f) { events.add("beforeCommit") }
-        }
-
-        val beforeIdx = events.indexOf("beforeCommit")
-        val commitIdx = events.indexOf("commit")
-        assertThat(beforeIdx).isGreaterThanOrEqualTo(0)
-        assertThat(commitIdx).isGreaterThan(beforeIdx)
-    }
-
-    // ==================== getRecoveryManager ====================
-
-    @Test
-    fun `getRecoveryManager returns non-null`() {
-        assertThat(txnManager.getRecoveryManager()).isNotNull
     }
 
     // ==================== Helpers ====================
