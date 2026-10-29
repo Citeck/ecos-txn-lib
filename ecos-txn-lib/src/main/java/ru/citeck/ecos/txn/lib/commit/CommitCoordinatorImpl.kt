@@ -12,7 +12,6 @@ import ru.citeck.ecos.txn.lib.commit.repo.TwoPhaseCommitStatus
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
-import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
@@ -78,7 +77,12 @@ class CommitCoordinatorImpl(
                 }
             } else {
                 manager.transactionsById[txnId]?.commitDelegatedToApp = commitCoordinatorApp
-                remoteClient.coordinateCommit(commitCoordinatorApp, txnId, data, txnLevel)
+                try {
+                    remoteClient.coordinateCommit(commitCoordinatorApp, txnId, data, txnLevel)
+                } catch (error: Throwable) {
+                    releaseAfterDelegationFailure(txnId, txnApps, data, error, txnLevel)
+                    throw error
+                }
                 if (!txnApps.contains(currentAppName)) {
                     manager.dispose(txnId)
                 }
@@ -86,6 +90,38 @@ class CommitCoordinatorImpl(
             }
         }
         coordinateLocalCommit(txnId, data, txnApps, txnLevel)
+    }
+
+    /**
+     * A failed request doesn't tell whether the coordinator received it, but its commit decision
+     * needs the prepare vote of the current app's branch. While that branch hasn't started to
+     * prepare, rolling it back leaves rollback as the only outcome, so all branches are released
+     * now. The branch is rolled back before any participant: otherwise the coordinator could
+     * prepare it in between. A branch that started to prepare, or is already gone, stays with
+     * the coordinator.
+     */
+    private fun releaseAfterDelegationFailure(
+        txnId: TxnId,
+        txnApps: Collection<String>,
+        data: TxnCommitData,
+        error: Throwable,
+        txnLevel: Int
+    ) {
+        try {
+            if (!txnApps.contains(currentAppName)) {
+                // no own vote to withdraw: the coordinator may still commit, so participants stay with it,
+                // and the empty context would only keep their inactivity jobs waiting
+                manager.dispose(txnId)
+            } else if (manager.abortUnpreparedBranch(txnId, error)) {
+                log.warn {
+                    "[$txnId] Commit delegation to $commitCoordinatorApp failed before prepare. " +
+                        "Rolling back apps $txnApps"
+                }
+                rollbackBeforeDecision(txnId, txnApps, data, error, txnLevel)
+            }
+        } catch (releaseError: Throwable) {
+            error.addSuppressed(releaseError)
+        }
     }
 
     private fun coordinateLocalCommit(txnId: TxnId, data: TxnCommitData, txnApps: MutableSet<String>, txnLevel: Int) {
@@ -185,22 +221,6 @@ class CommitCoordinatorImpl(
         error: Throwable,
         txnLevel: Int
     ) {
-
-        val commitDelegator = manager.transactionsById[txnId]?.commitDelegatedToApp ?: ""
-        if (commitDelegator.isNotBlank()) {
-            try {
-                val coordinatorTxnStatus = remoteClient.getTxnStatus(commitDelegator, txnId)
-                if (coordinatorTxnStatus == TransactionStatus.ROLLED_BACK ||
-                    coordinatorTxnStatus == TransactionStatus.NO_TRANSACTION
-                ) {
-                    // already rolled back by coordinator
-                    manager.dispose(txnId)
-                    return
-                }
-            } catch (e: Throwable) {
-                error.addSuppressed(e)
-            }
-        }
 
         val rollbackObservation = micrometerContext.createObs(
             TxnRollbackObsContext(

@@ -55,6 +55,31 @@ represent either PREPARING or COMMITTING. Failures before that write is attempte
 still release active resources through rollback, even if recording the rollback
 fails. Delegation records its destination before sending the request.
 
+A failed delegation request does not tell whether the coordinator received it. The
+coordinator cannot decide COMMIT without the prepare vote of the originator's branch, so
+while that branch has not started to prepare, the originator rolls it back and then rolls
+back every participant: rollback is the only possible outcome. The originator's branch is
+rolled back before any participant, otherwise the coordinator could prepare it in between.
+A branch that started to prepare, or is already gone because the coordinator completed and
+disposed it, stays with the coordinator; the original error is rethrown in every case. An
+originator without its own branch has no vote. It only releases its context, so participants
+asking it about the transaction get NO_TRANSACTION and their inactivity job releases unprepared
+branches. Only upgraded originators follow these rules: an older one keeps its branch open
+while the coordinator reports its own participant branch as active.
+
+A branch rolled back before it voted leaves a process-local tombstone for an hour (at most
+100,000 transactions), and a later prepare of that transaction fails. Without it, the web
+layer would recreate an empty context for the late request, which would vote "nothing to
+commit" and let the coordinator commit the other branches. The inactivity job takes the same
+path for unprepared non-empty writable branches; a branch prepared after the job checked its
+status stays with the coordinator. Tombstones do not survive a restart: a late prepare that
+reaches a restarted app still finds no branch and votes "nothing to commit". Telling that
+answer apart from a genuine empty vote requires a coordinator-side protocol change.
+
+Completion calls (prepare, commit, rollback, dispose) are serialized on the transaction's
+monitor, because coordinator requests, the originator and the inactivity job make them on
+different threads. Synchronization callbacks of those calls run under the monitor.
+
 A partially committed two-phase transaction stays COMMITTING. Recovery retries
 only unfinished prepared resources; successful and read-only resources are not
 committed again. Explicit rollback and disposal cannot reverse COMMITTING, and
@@ -187,6 +212,7 @@ The suite also exercises these contracts:
 | Policies and actions | External transaction policy routing, scope restoration on failure, continued callbacks after an action fails and rollback error suppression |
 | Health job | Busy/recent/expired contexts, exact owner/delegated routes, unavailable or failing status lookup, definitive missing owner and retry after disposal failure |
 | Coordinator recovery | Bounded own/global scans, live-context exclusions, instance routes, completion actions, partial acknowledgements and journal failures |
+| Delegation failure | Lost and delayed coordination requests over web-layer routing, prepared and missing originator branches, originator without a branch, tombstoned late prepares, abort racing with prepare and with the inactivity job |
 | Xid serialization | JSON/CBOR binary branches and empty recovery markers; malformed types, format integer overflow and extra tuple members are rejected |
 
 Health decisions run directly with controlled activity timestamps; the tests do not wait

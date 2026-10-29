@@ -41,6 +41,11 @@ class TransactionImpl(
 
     private var txnManagerContext: TxnManagerContext = EmptyTxnManagerContext
 
+    /**
+     * Completion calls from coordinator requests, the originator and the inactivity job are serialized
+     * on this transaction's monitor; the status is also read without it, by the job and status requests.
+     */
+    @Volatile
     private var txnStatus: TransactionStatus = TransactionStatus.NEW
 
     private var baseReadOnly: Boolean = initialReadOnly
@@ -188,6 +193,7 @@ class TransactionImpl(
         addAction(type, TxnActionRef(currentAppName, actionId, order))
     }
 
+    @Synchronized
     override fun prepareCommit(): List<EcosXid> {
         logDebug { "Prepare commit" }
         checkStatus(TransactionStatus.ACTIVE)
@@ -213,6 +219,7 @@ class TransactionImpl(
         return preparedXids
     }
 
+    @Synchronized
     override fun commitPrepared() {
         logDebug { "Commit prepared" }
         if (txnStatus == TransactionStatus.COMMITTED) {
@@ -233,6 +240,7 @@ class TransactionImpl(
         setStatus(TransactionStatus.COMMITTED)
     }
 
+    @Synchronized
     override fun onePhaseCommit() {
         logDebug { "One phase commit" }
         if (txnStatus == TransactionStatus.COMMITTED) {
@@ -264,6 +272,16 @@ class TransactionImpl(
         setStatus(TransactionStatus.COMMITTED)
     }
 
+    @Synchronized
+    override fun rollbackIfNotPrepared(cause: Throwable): Boolean {
+        if (txnStatus != TransactionStatus.ACTIVE) {
+            return false
+        }
+        rollback(cause)
+        return true
+    }
+
+    @Synchronized
     override fun rollback(cause: Throwable?) {
         logDebug { "Rollback" }
         if (txnStatus == TransactionStatus.ROLLED_BACK) {
@@ -364,6 +382,7 @@ class TransactionImpl(
         return resources.isEmpty() && actionsById.isEmpty()
     }
 
+    @Synchronized
     override fun dispose() {
         check(txnStatus != TransactionStatus.COMMITTING) {
             "[$txnId] Commit is pending; retain the transaction for recovery"

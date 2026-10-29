@@ -60,6 +60,7 @@ class TransactionManagerImpl : TransactionManager {
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
     internal val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
+    private val abortedBranches = AbortedBranches()
 
     @JvmOverloads
     fun init(
@@ -457,6 +458,8 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     override fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): List<EcosXid> {
+        // checked before the lookup: by now the web layer may have recreated an empty context
+        check(!abortedBranches.contains(txnId)) { "Transaction '$txnId' was rolled back before prepare" }
         val txnInfo = transactionsById[txnId] ?: error("Transaction is not found: '$txnId'")
         txnInfo.managerCanRecoverPreparedTxn = managerCanRecoverPreparedTxn
         val result = txnInfo.transaction.prepareCommit()
@@ -490,6 +493,39 @@ class TransactionManagerImpl : TransactionManager {
         }
         info.transaction.dispose()
         transactionsById.remove(txnId, info)
+    }
+
+    /**
+     * Withdraws the vote of the local branch if its prepare has not started: the coordinator
+     * can no longer commit the transaction.
+     */
+    internal fun abortUnpreparedBranch(txnId: TxnId, cause: Throwable): Boolean {
+        val transaction = transactionsById[txnId]?.transaction ?: return false
+        if (!transaction.rollbackIfNotPrepared(cause)) {
+            return false
+        }
+        abortedBranches.add(txnId)
+        return true
+    }
+
+    /**
+     * Disposes a context that the inactivity job found stuck. The job checks the status without
+     * the transaction's monitor, so a branch prepared since then stays with its coordinator.
+     */
+    internal fun disposeInactive(txnId: TxnId) {
+        val info = transactionsById[txnId] ?: return
+        val transaction = info.transaction
+        // a read-only or empty branch votes the same from a recreated context, so it needs no tombstone
+        if (!transaction.isReadOnly() && !transaction.isEmpty() &&
+            abortUnpreparedBranch(txnId, RuntimeException("Inactive transaction disposing. TxnId: $txnId"))
+        ) {
+            log.error { "[$txnId] Uncompleted inactive transaction rolled back before prepare" }
+        }
+        if (info.awaitsCoordinator()) {
+            logDebug(txnId) { "Inactive transaction was prepared meanwhile and stays with its coordinator" }
+            return
+        }
+        dispose(txnId)
     }
 
     override fun getStatus(txnId: TxnId): TransactionStatus {
@@ -527,5 +563,14 @@ class TransactionManagerImpl : TransactionManager {
         var managerCanRecoverPreparedTxn: Boolean = false,
         var lastAliveTime: Long = System.currentTimeMillis(),
         var commitDelegatedToApp: String = ""
-    )
+    ) {
+        /**
+         * A timeout cannot reverse an unresolved coordinator decision.
+         * Completed contexts can release resources after caching their outcome.
+         */
+        fun awaitsCoordinator(): Boolean {
+            return transaction.getStatus() == TransactionStatus.COMMITTING ||
+                (managerCanRecoverPreparedTxn && !transaction.isCompleted())
+        }
+    }
 }

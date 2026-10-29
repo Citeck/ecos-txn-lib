@@ -83,6 +83,15 @@ interface ManagedTransaction : Transaction {
     fun rollback(cause: Throwable?)
 
     /**
+     * Rolls back the transaction only if its prepare has not started, atomically with respect to
+     * [prepareCommit]. A branch rolled back this way never voted, so a coordinator can't commit it.
+     *
+     * @param cause The error that triggered the rollback, passed to [rollback].
+     * @return `true` if the transaction was active and is now rolled back.
+     */
+    fun rollbackIfNotPrepared(cause: Throwable): Boolean
+
+    /**
      * Disposes of the transaction, releasing resources and cleaning up after the transaction has completed.
      */
     fun dispose()

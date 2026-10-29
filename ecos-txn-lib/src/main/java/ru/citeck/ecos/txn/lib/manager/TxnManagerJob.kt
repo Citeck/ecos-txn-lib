@@ -87,14 +87,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
         val nonAliveTime = System.currentTimeMillis() - MAX_NON_ALIVE_TIME_MS
         for (txnId in transactionsById.keys) {
             val txnInfo = transactionsById[txnId] ?: continue
-            val status = txnInfo.transaction.getStatus()
-            if (status == TransactionStatus.COMMITTING ||
-                (txnInfo.managerCanRecoverPreparedTxn && !txnInfo.transaction.isCompleted())
-            ) {
-                /**
-                 * A timeout cannot reverse an unresolved coordinator decision.
-                 * Completed contexts can release resources after caching their outcome.
-                 */
+            if (txnInfo.awaitsCoordinator()) {
                 continue
             }
             if (!txnInfo.transaction.isIdle()) {
@@ -132,7 +125,7 @@ class TxnManagerJob(private val manager: TransactionManagerImpl) {
             if (txnInfo.lastAliveTime < nonAliveTime) {
                 log.warn { "[$txnId] Dispose stuck transaction" }
                 try {
-                    manager.dispose(txnId)
+                    manager.disposeInactive(txnId)
                 } catch (e: Throwable) {
                     log.error(e) { "[$txnId] Error while disposing of stuck transaction" }
                 }
