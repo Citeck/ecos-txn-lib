@@ -112,6 +112,15 @@ remote-Xid enlistment is sealed when `PREPARING` or `COMMITTING` starts. Direct
 management callers that bypass the action phase may flush existing resources in
 the fallback callback, but cannot add resources there.
 
+`JavaXaTxnManagerAdapter` is also a `TransactionSynchronizationRegistry`; wire one
+instance to a managed pool as both its transaction manager and its registry. Interposed
+synchronizations of a transaction share one ECOS synchronization, so a pool that
+registers one per borrowed connection costs the root one remote action per participant. A synchronization
+registered after that batch ran `beforeCompletion` opens a new batch, which still runs
+before the commit. Synchronizations registered with the JTA transaction directly keep an
+action each. Registry calls outside an active transaction fail with
+`IllegalStateException`.
+
 Recovery scans registered storages before changing any branch. It completes all
 visible branches of each requested global transaction, including late branches
 omitted from an older participant's journal snapshot. Other global transactions
@@ -207,7 +216,8 @@ The suite also exercises these contracts:
 
 | Component | Scenarios |
 | --- | --- |
-| XA/JTA adapters | All status mappings, transaction wrapper lifetime, identity-based enlistment, rollback synchronization and original XAException propagation |
+| XA/JTA adapters | All status mappings, transaction wrapper lifetime, identity-based enlistment, rollback synchronization, original XAException propagation, registry key and resources per transaction and registration refused outside an active transaction |
+| Interposed synchronizations | One remote action for all interposed synchronizations of a participant, registration during and after the batch observed against resource completion, batches shared by calls and pools of one transaction, direct registrations kept separate, rollback on a failed callback and isolation of a failed afterCompletion |
 | Java facade | Java-compiled Runnable/Supplier/Consumer overloads, checked exceptions, read-only and new-transaction scopes, parent/MDC restoration, batching and no-manager fallback |
 | Policies and actions | External transaction policy routing, scope restoration on failure, continued callbacks after an action fails and rollback error suppression |
 | Health job | Busy/recent/expired contexts, exact owner/delegated routes, unavailable or failing status lookup, definitive missing owner and retry after disposal failure |

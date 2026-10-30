@@ -199,26 +199,32 @@ class XaResourceAdapterTest {
         val onePhase: Boolean = false
     )
 
+    /** Records every call; [onCall] lets a test interleave them with its own events */
     class RecordingXAResource(
-        private val prepareResult: Int = XAResource.XA_OK
+        private val prepareResult: Int = XAResource.XA_OK,
+        private val onCall: (XACall) -> Unit = {}
     ) : XAResource {
         val calls = mutableListOf<XACall>()
 
+        private fun record(call: XACall) {
+            calls.add(call)
+            onCall(call)
+        }
         override fun start(xid: Xid, flags: Int) {
-            calls.add(XACall("start", xid, flag = flags))
+            record(XACall("start", xid, flag = flags))
         }
         override fun end(xid: Xid, flags: Int) {
-            calls.add(XACall("end", xid, flag = flags))
+            record(XACall("end", xid, flag = flags))
         }
         override fun prepare(xid: Xid): Int {
-            calls.add(XACall("prepare", xid))
+            record(XACall("prepare", xid))
             return prepareResult
         }
         override fun commit(xid: Xid, onePhase: Boolean) {
-            calls.add(XACall("commit", xid, onePhase = onePhase))
+            record(XACall("commit", xid, onePhase = onePhase))
         }
         override fun rollback(xid: Xid) {
-            calls.add(XACall("rollback", xid))
+            record(XACall("rollback", xid))
         }
         override fun recover(flag: Int): Array<Xid> = emptyArray()
         override fun isSameRM(xares: XAResource): Boolean = false

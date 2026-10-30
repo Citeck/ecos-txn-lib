@@ -59,20 +59,78 @@ class XaInteropContractTest {
         return states.map { (state, expected) ->
             DynamicTest.dynamicTest("$state -> $expected") {
                 TxnContext.doInTxn {
-                    val txn = TxnContext.getTxn() as TransactionImpl
-                    val statusField = TransactionImpl::class.java.getDeclaredField("txnStatus")
-                    statusField.isAccessible = true
                     val jta = adapter.transaction!!
-                    try {
-                        statusField.set(txn, state)
+                    withStatus(state) {
                         assertThat(jta.status).isEqualTo(expected)
                         assertThat(adapter.status).isEqualTo(expected)
-                    } finally {
-                        statusField.set(txn, TransactionStatus.ACTIVE)
+                        assertThat(adapter.transactionStatus).isEqualTo(expected)
                     }
                 }
             }
         }
+    }
+
+    @TestFactory
+    fun `interposed registration is rejected outside an active transaction`(): List<DynamicTest> {
+        val noTransaction = DynamicTest.dynamicTest("no transaction") {
+            assertThatThrownBy { adapter.registerInterposedSynchronization(sync(mutableListOf())) }
+                .isInstanceOf(IllegalStateException::class.java)
+        }
+        val inactive = (TransactionStatus.entries - TransactionStatus.ACTIVE).map { state ->
+            DynamicTest.dynamicTest("$state") {
+                val events = mutableListOf<String>()
+                TxnContext.doInTxn {
+                    adapter.transaction!!.enlistResource(XaResourceAdapterTest.RecordingXAResource())
+                    withStatus(state) {
+                        assertThatThrownBy { adapter.registerInterposedSynchronization(sync(events)) }
+                            .isInstanceOf(IllegalStateException::class.java)
+                    }
+                    // the refused registration left nothing behind: the next one opens a batch of its own
+                    adapter.registerInterposedSynchronization(sync(events))
+                }
+                assertThat(events).containsExactly("before", "after:${Status.STATUS_COMMITTED}")
+            }
+        }
+        return listOf(noTransaction) + inactive
+    }
+
+    @Test
+    fun `interposed synchronizations of a read-only transaction complete with its one-phase commit`() {
+        val events = mutableListOf<String>()
+        val resource = XaResourceAdapterTest.RecordingXAResource(onCall = { events.add("xa:${it.method}") })
+        TxnContext.doInTxn(readOnly = true) {
+            adapter.transaction!!.enlistResource(resource)
+            adapter.registerInterposedSynchronization(sync(events))
+        }
+        // a read-only transaction queues no before-commit action: the batch runs in the fallback of the commit
+        assertThat(events).containsExactly("xa:start", "before", "xa:end", "xa:commit", "after:${Status.STATUS_COMMITTED}")
+    }
+
+    @Test
+    fun `registry key and resources belong to the current transaction`() {
+        val secondPool = JavaXaTxnManagerAdapter(adapter.props)
+        assertThat(adapter.transactionKey).isNull()
+        assertThatThrownBy { adapter.getResource("key") }.isInstanceOf(IllegalStateException::class.java)
+        assertThatThrownBy { adapter.putResource("key", "value") }.isInstanceOf(IllegalStateException::class.java)
+        assertThatThrownBy { adapter.rollbackOnly }.isInstanceOf(IllegalStateException::class.java)
+
+        TxnContext.doInTxn {
+            val txnId = TxnContext.getTxn().getId()
+            assertThat(adapter.transactionKey).isEqualTo(txnId)
+            assertThat(adapter.rollbackOnly).isFalse()
+            assertThat(adapter.getResource("key")).isNull()
+            adapter.putResource("key", "value")
+            assertThat(adapter.getResource("key")).isEqualTo("value")
+            assertThat(secondPool.getResource("key")).isEqualTo("value")
+            adapter.putResource("key", "replaced")
+            TxnContext.doInNewTxn {
+                assertThat(adapter.transactionKey).isNotEqualTo(txnId)
+                assertThat(adapter.getResource("key")).isNull()
+                adapter.putResource("key", "inner")
+            }
+            assertThat(adapter.getResource("key")).isEqualTo("replaced")
+        }
+        assertThat(adapter.transactionKey).isNull()
     }
 
     @Test
@@ -197,6 +255,19 @@ class XaInteropContractTest {
                 assertThatThrownBy { invoke(bridge) }.isSameAs(failure)
                 assertThat(receivedXid).isSameAs(bridge.getXid())
             }
+        }
+    }
+
+    /** Runs [action] while the current transaction reports [state], then restores ACTIVE */
+    private fun withStatus(state: TransactionStatus, action: () -> Unit) {
+        val txn = TxnContext.getTxn() as TransactionImpl
+        val statusField = TransactionImpl::class.java.getDeclaredField("txnStatus")
+        statusField.isAccessible = true
+        try {
+            statusField.set(txn, state)
+            action()
+        } finally {
+            statusField.set(txn, TransactionStatus.ACTIVE)
         }
     }
 
