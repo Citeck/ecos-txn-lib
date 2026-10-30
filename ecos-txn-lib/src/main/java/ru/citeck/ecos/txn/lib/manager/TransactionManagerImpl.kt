@@ -95,9 +95,11 @@ class TransactionManagerImpl : TransactionManager {
     override fun getJournalPresence(coordinatorApp: String, txnId: TxnId): JournalPresence {
 
         val appRefs = setOf(webAppProps.appName, webAppProps.appName + ":" + webAppProps.appInstanceId)
-        if (props.commitCoordinatorApp.isBlank() || coordinatorApp !in appRefs ||
+        if (props.commitCoordinatorApp.isBlank() ||
+            coordinatorApp !in appRefs ||
             props.commitCoordinatorApp !in appRefs ||
-            twoPhaseCommitRepo !is AuthoritativeTwoPhaseCommitRepo || txnId.isEmpty()
+            twoPhaseCommitRepo !is AuthoritativeTwoPhaseCommitRepo ||
+            txnId.isEmpty()
         ) {
             return JournalPresence.UNKNOWN
         }
@@ -113,7 +115,8 @@ class TransactionManagerImpl : TransactionManager {
         return StartupOrphanRecovery(
             recoveryManager,
             canAttempt = {
-                props.commitCoordinatorApp.isNotBlank() && remoteClient.isAppAvailable(coordinator) &&
+                props.commitCoordinatorApp.isNotBlank() &&
+                    remoteClient.isAppAvailable(coordinator) &&
                     remoteClient.isApiVersionSupported(coordinator, TxnManagerRemoteApiClient.JOURNAL_PRESENCE_VER) ==
                     ApiVersionRes.SUPPORTED
             },
@@ -367,7 +370,8 @@ class TransactionManagerImpl : TransactionManager {
                     if (coordinationStarted) {
                         return@runAsSystem
                     }
-                    if (readOnly || transaction.getStatus() == TransactionStatus.COMMITTED ||
+                    if (readOnly ||
+                        transaction.getStatus() == TransactionStatus.COMMITTED ||
                         transaction.getStatus() == TransactionStatus.ROLLED_BACK
                     ) {
                         // transaction may be disposed early by commit coordinator
@@ -516,7 +520,8 @@ class TransactionManagerImpl : TransactionManager {
         val info = transactionsById[txnId] ?: return
         val transaction = info.transaction
         // a read-only or empty branch votes the same from a recreated context, so it needs no tombstone
-        if (!transaction.isReadOnly() && !transaction.isEmpty() &&
+        if (!transaction.isReadOnly() &&
+            !transaction.isEmpty() &&
             abortUnpreparedBranch(txnId, RuntimeException("Inactive transaction disposing. TxnId: $txnId"))
         ) {
             log.error { "[$txnId] Uncompleted inactive transaction rolled back before prepare" }

@@ -75,7 +75,9 @@ internal class TxnWireHarness(var version: Int) {
         }
     )
 
-    inner class Request : EcosWebClientReq, EcosWebExecutorReq {
+    inner class Request :
+        EcosWebClientReq,
+        EcosWebExecutorReq {
 
         var target = ""
         var requestPath = ""
@@ -167,7 +169,9 @@ internal class TxnWireHarness(var version: Int) {
         }
     }
 
-    class Body : EcosWebBodyReader, EcosWebBodyWriter {
+    class Body :
+        EcosWebBodyReader,
+        EcosWebBodyWriter {
 
         private val bytes = ByteArrayOutputStream()
 

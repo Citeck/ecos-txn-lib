@@ -302,31 +302,19 @@ class TxnManagerRemoteActionsTest {
     private class RoutingRemoteApiClient(
         private val registry: Map<String, TransactionManagerImpl>
     ) : TxnManagerRemoteApiClient {
-        override fun prepareCommit(app: String, txnId: TxnId) =
-            getManager(app).prepareCommitFromExtManager(txnId, true)
-        override fun commitPrepared(app: String, txnId: TxnId) =
-            getManager(app).getManagedTransaction(txnId).commitPrepared()
-        override fun onePhaseCommit(app: String, txnId: TxnId) =
-            getManager(app).getManagedTransaction(txnId).onePhaseCommit()
-        override fun rollback(app: String, txnId: TxnId, cause: Throwable?) =
-            getManager(app).getManagedTransaction(txnId).rollback(cause)
-        override fun disposeTxn(app: String, txnId: TxnId) =
-            getManager(app).dispose(txnId)
-        override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) =
-            getManager(app).coordinateCommit(txnId, data, txnLevel)
-        override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) =
-            getManager(app).recoveryCommit(txnId, xids)
-        override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) =
-            getManager(app).recoveryRollback(txnId, xids)
-        override fun getTxnStatus(app: String, txnId: TxnId) =
-            getManager(app).getStatus(txnId)
-        override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) =
-            getManager(app).getManagedTransaction(txnId).executeAction(actionId)
-        override fun isApiVersionSupported(app: String, version: Int) =
-            if (registry.containsKey(app)) ApiVersionRes.SUPPORTED else ApiVersionRes.APP_NOT_AVAILABLE
+        override fun prepareCommit(app: String, txnId: TxnId) = getManager(app).prepareCommitFromExtManager(txnId, true)
+        override fun commitPrepared(app: String, txnId: TxnId) = getManager(app).getManagedTransaction(txnId).commitPrepared()
+        override fun onePhaseCommit(app: String, txnId: TxnId) = getManager(app).getManagedTransaction(txnId).onePhaseCommit()
+        override fun rollback(app: String, txnId: TxnId, cause: Throwable?) = getManager(app).getManagedTransaction(txnId).rollback(cause)
+        override fun disposeTxn(app: String, txnId: TxnId) = getManager(app).dispose(txnId)
+        override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) = getManager(app).coordinateCommit(txnId, data, txnLevel)
+        override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) = getManager(app).recoveryCommit(txnId, xids)
+        override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) = getManager(app).recoveryRollback(txnId, xids)
+        override fun getTxnStatus(app: String, txnId: TxnId) = getManager(app).getStatus(txnId)
+        override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) = getManager(app).getManagedTransaction(txnId).executeAction(actionId)
+        override fun isApiVersionSupported(app: String, version: Int) = if (registry.containsKey(app)) ApiVersionRes.SUPPORTED else ApiVersionRes.APP_NOT_AVAILABLE
         override fun isAppAvailable(app: String) = registry.containsKey(app)
-        private fun getManager(app: String) =
-            registry[app] ?: registry.entries.firstOrNull { app.startsWith(it.key) }?.value
-                ?: error("No manager for '$app'")
+        private fun getManager(app: String) = registry[app] ?: registry.entries.firstOrNull { app.startsWith(it.key) }?.value
+            ?: error("No manager for '$app'")
     }
 }

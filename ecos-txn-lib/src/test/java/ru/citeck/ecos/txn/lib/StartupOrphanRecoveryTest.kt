@@ -612,7 +612,8 @@ class StartupOrphanRecoveryTest {
     }
 
     private class Journal(var data: RecoveryData? = null) :
-        AuthoritativeTwoPhaseCommitRepo, TwoPhaseCommitRepo by NoopTwoPhaseCommitRepo {
+        AuthoritativeTwoPhaseCommitRepo,
+        TwoPhaseCommitRepo by NoopTwoPhaseCommitRepo {
 
         var reads = 0
         var fail = false

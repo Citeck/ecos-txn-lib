@@ -108,8 +108,11 @@ class RecoveryManagerImpl : RecoveryManager {
         }
         var complete = true
         for (txnId in txnIds) {
-            if (txnId.isEmpty() || txnId.appName.isBlank() || txnId.appInstanceId.isBlank() ||
-                txnId.created <= Instant.EPOCH || !txnId.created.isBefore(cutoff)
+            if (txnId.isEmpty() ||
+                txnId.appName.isBlank() ||
+                txnId.appInstanceId.isBlank() ||
+                txnId.created <= Instant.EPOCH ||
+                !txnId.created.isBefore(cutoff)
             ) {
                 continue
             }

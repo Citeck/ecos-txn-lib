@@ -288,19 +288,14 @@ class DelegatedCommitTransportFailureTest {
         override fun prepareCommit(app: String, txnId: TxnId) = exec(app, txnId) { it.prepareCommitFromExtManager(txnId, true) }
         override fun commitPrepared(app: String, txnId: TxnId) = exec(app, txnId) { it.getManagedTransaction(txnId).commitPrepared() }
         override fun onePhaseCommit(app: String, txnId: TxnId) = exec(app, txnId) { it.getManagedTransaction(txnId).onePhaseCommit() }
-        override fun rollback(app: String, txnId: TxnId, cause: Throwable?) =
-            exec(app, txnId) { it.getManagedTransaction(txnId).rollback(null) }
+        override fun rollback(app: String, txnId: TxnId, cause: Throwable?) = exec(app, txnId) { it.getManagedTransaction(txnId).rollback(null) }
         override fun disposeTxn(app: String, txnId: TxnId) = exec(app, txnId) { it.dispose(txnId) }
-        override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) =
-            exec(app, txnId) { it.coordinateCommit(txnId, data, txnLevel) }
-        override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) =
-            exec(app, txnId) { it.getManagedTransaction(txnId).executeAction(actionId) }
+        override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) = exec(app, txnId) { it.coordinateCommit(txnId, data, txnLevel) }
+        override fun executeTxnAction(app: String, txnId: TxnId, actionId: Int) = exec(app, txnId) { it.getManagedTransaction(txnId).executeAction(actionId) }
         override fun recoveryCommit(app: String, txnId: TxnId, xids: Set<EcosXid>) = resolve(app)!!.recoveryCommit(txnId, xids)
-        override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) =
-            resolve(app)!!.recoveryRollback(txnId, xids)
+        override fun recoveryRollback(app: String, txnId: TxnId, xids: Set<EcosXid>) = resolve(app)!!.recoveryRollback(txnId, xids)
         override fun getTxnStatus(app: String, txnId: TxnId) = resolve(app)!!.getStatus(txnId)
-        override fun isApiVersionSupported(app: String, version: Int) =
-            if (resolve(app) != null) ApiVersionRes.SUPPORTED else ApiVersionRes.APP_NOT_AVAILABLE
+        override fun isApiVersionSupported(app: String, version: Int) = if (resolve(app) != null) ApiVersionRes.SUPPORTED else ApiVersionRes.APP_NOT_AVAILABLE
         override fun isAppAvailable(app: String) = resolve(app) != null
 
         private fun resolve(app: String): TransactionManagerImpl? {

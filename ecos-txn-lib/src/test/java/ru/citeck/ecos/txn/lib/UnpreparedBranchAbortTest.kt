@@ -115,10 +115,9 @@ class UnpreparedBranchAbortTest {
         assertThat(ids.map { branches.contains(it) }).containsExactly(false, false, false)
     }
 
-    private fun prepareInRecreatedContext(manager: TransactionManagerImpl, txnId: TxnId) =
-        manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false) {
-            manager.prepareCommitFromExtManager(txnId, true)
-        }
+    private fun prepareInRecreatedContext(manager: TransactionManagerImpl, txnId: TxnId) = manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false) {
+        manager.prepareCommitFromExtManager(txnId, true)
+    }
 
     private fun awaitState(thread: Thread, state: Thread.State) {
         val deadline = System.currentTimeMillis() + 10_000

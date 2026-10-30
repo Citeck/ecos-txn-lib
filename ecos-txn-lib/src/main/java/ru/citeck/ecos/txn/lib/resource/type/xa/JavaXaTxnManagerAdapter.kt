@@ -18,7 +18,9 @@ import ru.citeck.ecos.txn.lib.transaction.Transaction as EcosTransaction
  * manager and its synchronization registry. The pool registers an interposed synchronization for every
  * connection it lends; one batch per transaction keeps that from costing the root an action each.
  */
-class JavaXaTxnManagerAdapter(val props: EcosWebAppProps) : TransactionManager, TransactionSynchronizationRegistry {
+class JavaXaTxnManagerAdapter(val props: EcosWebAppProps) :
+    TransactionManager,
+    TransactionSynchronizationRegistry {
 
     companion object {
         private val log = KotlinLogging.logger {}
