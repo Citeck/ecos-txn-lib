@@ -60,7 +60,7 @@ class TransactionManagerImpl : TransactionManager {
 
     private val currentTxn = ThreadLocal<ManagedTransaction>()
     internal val transactionsById = ConcurrentHashMap<TxnId, TransactionInfo>()
-    private val abortedBranches = AbortedBranches()
+    internal val abortedBranches = AbortedBranches()
 
     @JvmOverloads
     fun init(
@@ -462,9 +462,11 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     override fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): List<EcosXid> {
-        // checked before the lookup: by now the web layer may have recreated an empty context
+        // look the context up first: the tombstone is written before the aborted context can be removed,
+        // so a context the web layer recreated after the abort is never found without its tombstone
+        val txnInfo = transactionsById[txnId]
         check(!abortedBranches.contains(txnId)) { "Transaction '$txnId' was rolled back before prepare" }
-        val txnInfo = transactionsById[txnId] ?: error("Transaction is not found: '$txnId'")
+        checkNotNull(txnInfo) { "Transaction is not found: '$txnId'" }
         txnInfo.managerCanRecoverPreparedTxn = managerCanRecoverPreparedTxn
         val result = txnInfo.transaction.prepareCommit()
         if (result.isEmpty()) {
@@ -505,10 +507,14 @@ class TransactionManagerImpl : TransactionManager {
      */
     internal fun abortUnpreparedBranch(txnId: TxnId, cause: Throwable): Boolean {
         val transaction = transactionsById[txnId]?.transaction ?: return false
-        if (!transaction.rollbackIfNotPrepared(cause)) {
-            return false
+        // under the same monitor as the rollback: a concurrent dispose cannot remove the context,
+        // and the web layer cannot recreate it, until the tombstone is in place
+        synchronized(transaction) {
+            if (!transaction.rollbackIfNotPrepared(cause)) {
+                return false
+            }
+            abortedBranches.add(txnId)
         }
-        abortedBranches.add(txnId)
         return true
     }
 

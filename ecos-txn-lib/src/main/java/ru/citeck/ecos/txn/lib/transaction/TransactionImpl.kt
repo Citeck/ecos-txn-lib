@@ -44,6 +44,7 @@ class TransactionImpl(
     /**
      * Completion calls from coordinator requests, the originator and the inactivity job are serialized
      * on this transaction's monitor; the status is also read without it, by the job and status requests.
+     * The manager also locks this monitor (see TransactionManagerImpl.abortUnpreparedBranch), so it must stay `this`.
      */
     @Volatile
     private var txnStatus: TransactionStatus = TransactionStatus.NEW

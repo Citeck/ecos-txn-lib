@@ -85,6 +85,8 @@ interface ManagedTransaction : Transaction {
     /**
      * Rolls back the transaction only if its prepare has not started, atomically with respect to
      * [prepareCommit]. A branch rolled back this way never voted, so a coordinator can't commit it.
+     * Implementations must run all completion calls under the transaction's own monitor (`this`):
+     * the manager locks it to record the withdrawn vote in the same critical section.
      *
      * @param cause The error that triggered the rollback, passed to [rollback].
      * @return `true` if the transaction was active and is now rolled back.

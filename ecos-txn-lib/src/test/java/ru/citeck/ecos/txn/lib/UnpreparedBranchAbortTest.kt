@@ -22,8 +22,9 @@ import kotlin.concurrent.thread
 
 /**
  * A branch that has not voted may be rolled back by its own app, which makes commit impossible
- * for the coordinator. The rollback must not interleave with a prepare, and a late prepare must
- * vote no even in a context the web layer recreated for it.
+ * for the coordinator. The rollback must not interleave with a prepare, a late prepare must
+ * vote no even in a context the web layer recreated for it, and no dispose may remove the
+ * rolled-back branch before its tombstone exists.
  */
 class UnpreparedBranchAbortTest {
 
@@ -75,6 +76,33 @@ class UnpreparedBranchAbortTest {
     }
 
     @Test
+    fun `dispose waits for the tombstone of an abort in progress`() {
+        val manager = createManager()
+        val txnId = addBranch(manager)
+        var aborted: Boolean? = null
+        val abort = thread(start = false) { aborted = manager.abortUnpreparedBranch(txnId, RuntimeException("lost")) }
+        val dispose = thread(start = false) { manager.dispose(txnId) }
+
+        // holding the tombstones stops the abort right after its rollback, inside the critical section
+        synchronized(manager.abortedBranches) {
+            abort.start()
+            awaitState(abort, Thread.State.BLOCKED)
+            assertThat(manager.getStatus(txnId)).isEqualTo(TransactionStatus.ROLLED_BACK)
+            dispose.start()
+            awaitState(dispose, Thread.State.BLOCKED)
+            assertThat(manager.getStatus(txnId)).isEqualTo(TransactionStatus.ROLLED_BACK)
+        }
+        abort.join(10_000)
+        dispose.join(10_000)
+
+        assertThat(aborted).isTrue()
+        assertThat(manager.getStatus(txnId)).isEqualTo(TransactionStatus.NO_TRANSACTION)
+        assertThat(events).containsExactly("res:rollback")
+        assertThatThrownBy { prepareInRecreatedContext(manager, txnId) }
+            .hasMessageContaining("rolled back before prepare")
+    }
+
+    @Test
     fun `inactivity disposal leaves a branch prepared after the job checked it to the coordinator`() {
         val manager = createManager()
         val txnId = addBranch(manager)
@@ -122,6 +150,7 @@ class UnpreparedBranchAbortTest {
     private fun awaitState(thread: Thread, state: Thread.State) {
         val deadline = System.currentTimeMillis() + 10_000
         while (thread.state != state) {
+            check(thread.isAlive) { "Thread has finished, expected $state" }
             check(System.currentTimeMillis() < deadline) { "Thread state is ${thread.state}, expected $state" }
             Thread.sleep(5)
         }

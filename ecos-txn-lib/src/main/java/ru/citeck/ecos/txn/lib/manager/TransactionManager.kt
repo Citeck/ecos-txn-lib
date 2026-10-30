@@ -69,6 +69,7 @@ interface TransactionManager {
      * @param txnId Unique identifier of the transaction.
      * @param managerCanRecoverPreparedTxn Indicates if the external manager can recover prepared transactions.
      * @return A list of prepared `EcosXid` instances.
+     * @throws IllegalStateException if the transaction is not found or was rolled back before it voted.
      */
     fun prepareCommitFromExtManager(txnId: TxnId, managerCanRecoverPreparedTxn: Boolean): List<EcosXid>
 
