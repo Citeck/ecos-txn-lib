@@ -79,6 +79,19 @@ Tombstones do not survive a restart: a late prepare that reaches a restarted app
 no branch and votes "nothing to commit". Telling that answer apart from a genuine empty vote
 requires a coordinator-side protocol change.
 
+A read-only root makes no commit decision, but its participants keep their branches, and
+with them their database connections, until the root tells them to release. When the
+root's action returns or throws, the root disposes its own branch first and then sends a
+dispose to every participant that registered in the transaction, one `txn-actions` task
+per participant, without touching the 2PC journal. A notification that fails or cannot be
+scheduled is only logged and never replaces the root's result or error. Such a participant,
+like one the root never heard from (its response was lost), is released by its inactivity
+job once the branch has been idle for 20 seconds and the root answers NO_TRANSACTION. A
+failed local dispose of the root does not stop the notification. The notification runs on a pool thread without the root
+transaction, so the web layer does not pin it to the replica that served the root's calls:
+with several replicas of a participant it can reach another one, where it is a no-op, and
+the inactivity job releases the branch.
+
 Completion calls (prepare, commit, rollback, dispose) are serialized on the transaction's
 monitor, because coordinator requests, the originator and the inactivity job make them on
 different threads. Synchronization callbacks of those calls run under the monitor.
@@ -226,6 +239,7 @@ The suite also exercises these contracts:
 | Health job | Busy/recent/expired contexts, exact owner/delegated routes, unavailable or failing status lookup, definitive missing owner and retry after disposal failure |
 | Coordinator recovery | Bounded own/global scans, live-context exclusions, instance routes, completion actions, partial acknowledgements and journal failures |
 | Delegation failure | Lost and delayed coordination requests over web-layer routing, prepared and missing originator branches, originator without a branch, tombstoned late prepares, abort racing with prepare and with the inactivity job, dispose waiting for the tombstone of a running abort |
+| Read-only root completion | Participant branches released after a returned and after a failed root, one notification per participant after the local dispose, the root's error kept when a participant cannot be notified, the executor rejects the task or the local dispose fails, nothing scheduled without remote participants, participants unknown to the root left to the inactivity job |
 | Xid serialization | JSON/CBOR binary branches and empty recovery markers; malformed types, format integer overflow and extra tuple members are rejected |
 
 Health decisions run directly with controlled activity timestamps; the tests do not wait

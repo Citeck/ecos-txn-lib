@@ -244,8 +244,8 @@ class TransactionManagerImpl : TransactionManager {
                     }
                 } else if (isNewLocalTxn) {
                     // The local txn is being kept alive (readonly with cached data, or stateful
-                    // work). Register the current app as a participant so the originating app's
-                    // disposeRoot will notify us when the root txn ends — without this the
+                    // work). Register the current app as a participant so the originating app
+                    // notifies us when the root txn ends, after a failure too — without this the
                     // background TxnManagerJob would have to GC the lingering local txn after
                     // it goes idle. For stateful txns getOrAddRes already registered xids for
                     // the current app and this is a no-op on the receiving ctx (addAll of an
@@ -317,34 +317,7 @@ class TransactionManagerImpl : TransactionManager {
                 val actionRes = txnActionObservation.observe { action.invoke() }
 
                 if (readOnly) {
-                    // Local dispose stays synchronous — committing read-only resources via
-                    // onePhaseCommit happens inside transaction.dispose(), and callers expect
-                    // those side effects to be observable as soon as doInTxn returns.
-                    AuthContext.runAsSystem {
-                        dispose(newTxnId)
-                    }
-                    // Each remote participant is notified on its own task via the platform
-                    // txn-actions executor (the same one TxnActionsManager uses for async
-                    // commit/rollback work) so the total wait collapses from sum-of-latencies
-                    // to max-of-latencies and a slow peer can't hold up the others. Read-only
-                    // disposal is idempotent and writes nothing to the 2PC repo, so we skip
-                    // commitCoordinator and call remoteClient.disposeTxn directly. A late or
-                    // even dropped notification is harmless — each participant's TxnManagerJob
-                    // is the fallback.
-                    for (app in xidsByApp.keys) {
-                        if (app == webAppProps.appName) {
-                            continue
-                        }
-                        txnActionsExecutor.execute("ecos-txn-ro-dispose-$newTxnId-$app") {
-                            AuthContext.runAsSystem {
-                                try {
-                                    remoteClient.disposeTxn(app, newTxnId)
-                                } catch (e: Throwable) {
-                                    logError(newTxnId, e) { "Async dispose of RO txn failed for app $app" }
-                                }
-                            }
-                        }
-                    }
+                    releaseReadOnlyRoot(newTxnId, xidsByApp.keys)
                     actionRes
                 } else {
                     AuthContext.runAsSystem {
@@ -370,8 +343,9 @@ class TransactionManagerImpl : TransactionManager {
                     if (coordinationStarted) {
                         return@runAsSystem
                     }
-                    if (readOnly ||
-                        transaction.getStatus() == TransactionStatus.COMMITTED ||
+                    if (readOnly) {
+                        releaseReadOnlyRoot(newTxnId, xidsByApp.keys, error)
+                    } else if (transaction.getStatus() == TransactionStatus.COMMITTED ||
                         transaction.getStatus() == TransactionStatus.ROLLED_BACK
                     ) {
                         // transaction may be disposed early by commit coordinator
@@ -396,6 +370,53 @@ class TransactionManagerImpl : TransactionManager {
         logDebug(transaction) { "Do in new txn finished. ReadOnly: $readOnly level: $txnLevel. Total time: $totalTime ms" }
 
         return result
+    }
+
+    /**
+     * Completes a read-only root after its action returned or threw: the local branch is disposed
+     * first, then every remote participant is told to release its branch. The participants hold
+     * their branches until they are told, so both outcomes must release them. A [failure] that the
+     * caller rethrows is never replaced: a failed local dispose is attached to it as suppressed.
+     * Without a failure, a failed local dispose is thrown before the notification, and the catch of
+     * doInNewTxn calls this again with it, so the participants are still notified once.
+     */
+    private fun releaseReadOnlyRoot(txnId: TxnId, participants: Collection<String>, failure: Throwable? = null) {
+        // local dispose stays synchronous: the one-phase commit of read-only resources happens inside
+        // transaction.dispose(), and callers expect its effects to be observable as soon as doInTxn returns
+        try {
+            AuthContext.runAsSystem {
+                dispose(txnId)
+            }
+        } catch (e: Throwable) {
+            if (failure == null) {
+                throw e
+            }
+            failure.addSuppressed(e)
+        }
+        notifyReadOnlyParticipants(txnId, participants)
+    }
+
+    /**
+     * Tells every remote participant of a read-only root to release its branch, one fire-and-forget
+     * task per participant on the txn-actions executor: the root never waits for a peer, and a slow
+     * peer does not delay the others. Read-only disposal is idempotent and writes nothing to the 2PC
+     * repo, so the commit coordinator is skipped. Never throws: a notification that is lost, rejected
+     * or failed is covered by the participant's TxnManagerJob.
+     */
+    private fun notifyReadOnlyParticipants(txnId: TxnId, participants: Collection<String>) {
+        try {
+            for (app in participants.filter { it != webAppProps.appName }) {
+                txnActionsExecutor.execute("ecos-txn-ro-dispose-$txnId-$app") {
+                    AuthContext.runAsSystem {
+                        remoteClient.disposeTxn(app, txnId)
+                    }
+                }.catch { e ->
+                    logError(txnId, e) { "Async dispose of RO txn failed for app $app" }
+                }
+            }
+        } catch (e: Throwable) {
+            logError(txnId, e) { "Participants of RO txn were not notified" }
+        }
     }
 
     private fun <T> doWithinTxn(

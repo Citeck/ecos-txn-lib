@@ -571,11 +571,7 @@ class TransactionManagerTest {
         // participant on the platform executor. Verify both that each non-current app
         // gets exactly one disposeTxn and that no commit/coordinate plumbing is invoked
         // (RO disposal must skip commitCoordinator and the 2PC repo entirely).
-        txnManager.shutdown()
-        val recording = RecordingRemoteClient(disposeLatch = CountDownLatch(2))
-        txnManager = TransactionManagerImpl()
-        txnManager.init(EcosWebAppApiMock("test-app"), EcosTxnProps(), remoteClient = recording)
-        TxnContext.setManager(txnManager)
+        val recording = useRecordingClient(CountDownLatch(2))
 
         txnManager.doInTxn(TransactionPolicy.REQUIRED, true) {
             TxnContext.getTxn().registerXids("peer-app-a", emptySet())
@@ -590,6 +586,36 @@ class TransactionManagerTest {
         assertThat(recording.calls.any { it.startsWith("coordinateCommit") || it.startsWith("prepareCommit") })
             .describedAs("RO disposal must not go through commit/2PC paths")
             .isFalse
+    }
+
+    @Test
+    fun readOnlyDoInNewTxnErrorDisposesRemoteParticipantsAsync() {
+        // A failed read-only root releases its participants the same way as a returned one and
+        // rethrows its own error: no rollback, commit or 2PC call is made for it.
+        val recording = useRecordingClient(CountDownLatch(2))
+
+        val failure = IllegalStateException("query failed")
+        assertThatThrownBy {
+            txnManager.doInTxn(TransactionPolicy.REQUIRED, true) {
+                TxnContext.getTxn().registerXids("peer-app-a", emptySet())
+                TxnContext.getTxn().registerXids("peer-app-b", emptySet())
+                throw failure
+            }
+        }.isSameAs(failure)
+
+        assertThat(recording.disposeLatch!!.await(2, TimeUnit.SECONDS))
+            .describedAs("async dispose fan-out must reach both participants after the error")
+            .isTrue
+        assertThat(recording.calls).containsExactlyInAnyOrder("disposeTxn:peer-app-a", "disposeTxn:peer-app-b")
+    }
+
+    private fun useRecordingClient(disposeLatch: CountDownLatch): RecordingRemoteClient {
+        txnManager.shutdown()
+        val recording = RecordingRemoteClient(disposeLatch = disposeLatch)
+        txnManager = TransactionManagerImpl()
+        txnManager.init(EcosWebAppApiMock("test-app"), EcosTxnProps(), remoteClient = recording)
+        TxnContext.setManager(txnManager)
+        return recording
     }
 
     private class RecordingRemoteClient(
