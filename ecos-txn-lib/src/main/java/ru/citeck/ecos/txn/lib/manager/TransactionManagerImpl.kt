@@ -317,7 +317,7 @@ class TransactionManagerImpl : TransactionManager {
                 val actionRes = txnActionObservation.observe { action.invoke() }
 
                 if (readOnly) {
-                    releaseReadOnlyRoot(newTxnId, xidsByApp.keys)
+                    releaseReadOnlyRoot(transaction, xidsByApp.keys)
                     actionRes
                 } else {
                     AuthContext.runAsSystem {
@@ -344,7 +344,7 @@ class TransactionManagerImpl : TransactionManager {
                         return@runAsSystem
                     }
                     if (readOnly) {
-                        releaseReadOnlyRoot(newTxnId, xidsByApp.keys, error)
+                        releaseReadOnlyRoot(transaction, xidsByApp.keys, error)
                     } else if (transaction.getStatus() == TransactionStatus.COMMITTED ||
                         transaction.getStatus() == TransactionStatus.ROLLED_BACK
                     ) {
@@ -380,12 +380,16 @@ class TransactionManagerImpl : TransactionManager {
      * Without a failure, a failed local dispose is thrown before the notification, and the catch of
      * doInNewTxn calls this again with it, so the participants are still notified once.
      */
-    private fun releaseReadOnlyRoot(txnId: TxnId, participants: Collection<String>, failure: Throwable? = null) {
+    private fun releaseReadOnlyRoot(
+        transaction: ManagedTransaction,
+        participants: Collection<String>,
+        failure: Throwable? = null
+    ) {
         // local dispose stays synchronous: the one-phase commit of read-only resources happens inside
         // transaction.dispose(), and callers expect its effects to be observable as soon as doInTxn returns
         try {
             AuthContext.runAsSystem {
-                dispose(txnId)
+                dispose(transaction.getId())
             }
         } catch (e: Throwable) {
             if (failure == null) {
@@ -393,22 +397,27 @@ class TransactionManagerImpl : TransactionManager {
             }
             failure.addSuppressed(e)
         }
-        notifyReadOnlyParticipants(txnId, participants)
+        notifyReadOnlyParticipants(transaction, participants)
     }
 
     /**
      * Tells every remote participant of a read-only root to release its branch, one fire-and-forget
      * task per participant on the txn-actions executor: the root never waits for a peer, and a slow
-     * peer does not delay the others. Read-only disposal is idempotent and writes nothing to the 2PC
-     * repo, so the commit coordinator is skipped. Never throws: a notification that is lost, rejected
-     * or failed is covered by the participant's TxnManagerJob.
+     * peer does not delay the others. Each task runs with the root as the current transaction, so the
+     * web layer sends the dispose to the replica pinned by the root's calls, with the root's id, and
+     * the participant releases the branch that served the root. Read-only disposal is idempotent and
+     * writes nothing to the 2PC repo, so the commit coordinator is skipped. Never throws: a
+     * notification that is lost, rejected or failed is covered by the participant's TxnManagerJob.
      */
-    private fun notifyReadOnlyParticipants(txnId: TxnId, participants: Collection<String>) {
+    private fun notifyReadOnlyParticipants(transaction: ManagedTransaction, participants: Collection<String>) {
+        val txnId = transaction.getId()
         try {
             for (app in participants.filter { it != webAppProps.appName }) {
                 txnActionsExecutor.execute("ecos-txn-ro-dispose-$txnId-$app") {
-                    AuthContext.runAsSystem {
-                        remoteClient.disposeTxn(app, txnId)
+                    doWithCurrentTxn(transaction) {
+                        AuthContext.runAsSystem {
+                            remoteClient.disposeTxn(app, txnId)
+                        }
                     }
                 }.catch { e ->
                     logError(txnId, e) { "Async dispose of RO txn failed for app $app" }
@@ -425,13 +434,26 @@ class TransactionManagerImpl : TransactionManager {
         ctx: TxnManagerContext,
         action: () -> T
     ): T {
+        return doWithCurrentTxn(transaction) {
+            transaction.doWithinTxn(ctx, readOnly, action)
+        }
+    }
+
+    /**
+     * Runs [action] with [transaction] as the current transaction of the thread: thread-local and
+     * MDC only, the transaction itself is not entered, so a completed or disposed one is fine. The
+     * completion calls made off the thread of a transaction run this way: the web layer then sends
+     * them to the replicas pinned by the transaction's calls, with the transaction id, as it does
+     * for the calls made from that thread.
+     */
+    internal fun <T> doWithCurrentTxn(transaction: ManagedTransaction, action: () -> T): T {
         val prevTxn = currentTxn.get()
         currentTxn.set(transaction)
         var mdcTxnIdBefore: String? = null
         try {
             mdcTxnIdBefore = MDC.get(MDC_TXN_ID_KEY)
             MDC.put(MDC_TXN_ID_KEY, transaction.getId().toString())
-            return transaction.doWithinTxn(ctx, readOnly, action)
+            return action.invoke()
         } finally {
             if (prevTxn == null) {
                 currentTxn.remove()
@@ -479,6 +501,10 @@ class TransactionManagerImpl : TransactionManager {
     }
 
     override fun getCurrentTransaction(): Transaction? {
+        return currentTxn.get()
+    }
+
+    internal fun getCurrentManagedTransaction(): ManagedTransaction? {
         return currentTxn.get()
     }
 

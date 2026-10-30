@@ -609,6 +609,62 @@ class TransactionManagerTest {
         assertThat(recording.calls).containsExactlyInAnyOrder("disposeTxn:peer-app-a", "disposeTxn:peer-app-b")
     }
 
+    @Test
+    fun `dispose after asynchronous after-commit actions keeps the committing transaction current`() {
+        // After-commit actions run on a pool thread, and the dispose of the participants follows
+        // them there once the committing thread has moved on. It must still see the root
+        // transaction: the web layer sends it to the replica that served the root only through
+        // the routes stored in that transaction.
+        val recording = useRecordingClient(CountDownLatch(1))
+        val events = CopyOnWriteArrayList<String>()
+        val committingThreadDone = CountDownLatch(1)
+        var txnId: TxnId? = null
+
+        txnManager.doInTxn(TransactionPolicy.REQUIRED, false) {
+            val txn = TxnContext.getTxn()
+            txnId = txn.getId()
+            recording.prepareXids = listOf(EcosXid.create(txn.getId(), "peer".toByteArray()))
+            txn.getOrAddRes("r0") { _, id -> TestResource("r0", id, events) }
+            txn.registerXids("peer-app", recording.prepareXids.toSet())
+            TxnContext.doAfterCommit(0f, false) {
+                committingThreadDone.await(2, TimeUnit.SECONDS)
+                events.add("afterCommit")
+            }
+        }
+        assertThat(recording.calls)
+            .describedAs("the committing thread does not wait for the actions")
+            .containsExactly("prepareCommit:peer-app", "commitPrepared:peer-app")
+        committingThreadDone.countDown()
+
+        assertThat(recording.disposeLatch!!.await(2, TimeUnit.SECONDS))
+            .describedAs("dispose after the after-commit actions")
+            .isTrue
+        assertThat(events).contains("r0:commitPrepared", "afterCommit")
+        assertThat(recording.calls).containsExactly("prepareCommit:peer-app", "commitPrepared:peer-app", "disposeTxn:peer-app")
+        val dispose = recording.disposeCalls.single()
+        assertThat(dispose.thread).describedAs("dispose made after the actions, off the committing thread").isNotSameAs(Thread.currentThread())
+        assertThat(dispose.currentTxnId).describedAs("committing transaction current in the dispose").isEqualTo(txnId)
+    }
+
+    @Test
+    fun `doWithCurrentTxn makes a disposed transaction current and restores the previous one`() {
+        val disposed = TxnContext.doInTxn { txnManager.getCurrentManagedTransaction()!! }
+        assertThat(disposed.getStatus()).isEqualTo(TransactionStatus.DISPOSED)
+
+        TxnContext.doInTxn {
+            val outer = TxnContext.getTxn()
+            txnManager.doWithCurrentTxn(disposed) {
+                assertThat(TxnContext.getTxn()).isSameAs(disposed)
+            }
+            assertThat(TxnContext.getTxn()).isSameAs(outer)
+        }
+        txnManager.doWithCurrentTxn(disposed) {
+            assertThat(TxnContext.getTxn()).isSameAs(disposed)
+        }
+        assertThat(TxnContext.getTxnOrNull()).isNull()
+        assertThat(disposed.getStatus()).describedAs("the transaction itself is not entered").isEqualTo(TransactionStatus.DISPOSED)
+    }
+
     private fun useRecordingClient(disposeLatch: CountDownLatch): RecordingRemoteClient {
         txnManager.shutdown()
         val recording = RecordingRemoteClient(disposeLatch = disposeLatch)
@@ -618,10 +674,14 @@ class TransactionManagerTest {
         return recording
     }
 
+    private class DisposeCall(val app: String, val currentTxnId: TxnId?, val thread: Thread)
+
     private class RecordingRemoteClient(
         val disposeLatch: CountDownLatch? = null
     ) : TxnManagerRemoteApiClient {
         val calls: MutableList<String> = CopyOnWriteArrayList()
+        val disposeCalls: MutableList<DisposeCall> = CopyOnWriteArrayList()
+        var prepareXids: List<EcosXid> = emptyList()
 
         override fun coordinateCommit(app: String, txnId: TxnId, data: TxnCommitData, txnLevel: Int) {
             calls.add("coordinateCommit:$app")
@@ -634,6 +694,7 @@ class TransactionManagerTest {
         }
         override fun disposeTxn(app: String, txnId: TxnId) {
             calls.add("disposeTxn:$app")
+            disposeCalls.add(DisposeCall(app, TxnContext.getTxnOrNull()?.getId(), Thread.currentThread()))
             disposeLatch?.countDown()
         }
         override fun onePhaseCommit(app: String, txnId: TxnId) {
@@ -641,7 +702,7 @@ class TransactionManagerTest {
         }
         override fun prepareCommit(app: String, txnId: TxnId): List<EcosXid> {
             calls.add("prepareCommit:$app")
-            return emptyList()
+            return prepareXids
         }
         override fun commitPrepared(app: String, txnId: TxnId) {
             calls.add("commitPrepared:$app")

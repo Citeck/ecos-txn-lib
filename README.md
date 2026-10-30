@@ -87,10 +87,15 @@ per participant, without touching the 2PC journal. A notification that fails or 
 scheduled is only logged and never replaces the root's result or error. Such a participant,
 like one the root never heard from (its response was lost), is released by its inactivity
 job once the branch has been idle for 20 seconds and the root answers NO_TRANSACTION. A
-failed local dispose of the root does not stop the notification. The notification runs on a pool thread without the root
-transaction, so the web layer does not pin it to the replica that served the root's calls:
-with several replicas of a participant it can reach another one, where it is a no-op, and
-the inactivity job releases the branch.
+failed local dispose of the root does not stop the notification.
+
+Completion calls made off the thread of a transaction, the notification of a read-only
+root's participants and the dispose that follows asynchronous after-commit actions, run
+with that transaction as the current one: the web layer then sends them to the replicas
+pinned by the transaction's calls, with the transaction id, as it does for the calls made
+from the transaction's thread. Without it a participant with several replicas could receive
+the call on another replica, where it is a no-op, and keep its branch until its inactivity
+job releases it.
 
 Completion calls (prepare, commit, rollback, dispose) are serialized on the transaction's
 monitor, because coordinator requests, the originator and the inactivity job make them on
@@ -235,11 +240,11 @@ The suite also exercises these contracts:
 | XA/JTA adapters | All status mappings, transaction wrapper lifetime, identity-based enlistment, rollback synchronization, original XAException propagation, registry key and resources per transaction and registration refused outside an active transaction |
 | Interposed synchronizations | One remote action for all interposed synchronizations of a participant, registration during and after the batch observed against resource completion, batches shared by calls and pools of one transaction, direct registrations kept separate, rollback on a failed callback and isolation of a failed afterCompletion |
 | Java facade | Java-compiled Runnable/Supplier/Consumer overloads, checked exceptions, read-only and new-transaction scopes, parent/MDC restoration, batching and no-manager fallback |
-| Policies and actions | External transaction policy routing, scope restoration on failure, continued callbacks after an action fails and rollback error suppression |
+| Policies and actions | External transaction policy routing, scope restoration on failure, continued callbacks after an action fails, rollback error suppression and the committing transaction kept current for the dispose after asynchronous after-commit actions |
 | Health job | Busy/recent/expired contexts, exact owner/delegated routes, unavailable or failing status lookup, definitive missing owner and retry after disposal failure |
 | Coordinator recovery | Bounded own/global scans, live-context exclusions, instance routes, completion actions, partial acknowledgements and journal failures |
 | Delegation failure | Lost and delayed coordination requests over web-layer routing, prepared and missing originator branches, originator without a branch, tombstoned late prepares, abort racing with prepare and with the inactivity job, dispose waiting for the tombstone of a running abort |
-| Read-only root completion | Participant branches released after a returned and after a failed root, one notification per participant after the local dispose, the root's error kept when a participant cannot be notified, the executor rejects the task or the local dispose fails, nothing scheduled without remote participants, participants unknown to the root left to the inactivity job |
+| Read-only root completion | Participant branches released after a returned and after a failed root, one notification per participant after the local dispose with the root as the current transaction, the root's error kept when a participant cannot be notified, the executor rejects the task or the local dispose fails, nothing scheduled without remote participants, participants unknown to the root left to the inactivity job |
 | Xid serialization | JSON/CBOR binary branches and empty recovery markers; malformed types, format integer overflow and extra tuple members are rejected |
 
 Health decisions run directly with controlled activity timestamps; the tests do not wait

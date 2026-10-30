@@ -14,6 +14,7 @@ import ru.citeck.ecos.txn.lib.manager.api.client.ApiVersionRes
 import ru.citeck.ecos.txn.lib.manager.api.client.TxnManagerRemoteApiClient
 import ru.citeck.ecos.txn.lib.transaction.TxnId
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
+import ru.citeck.ecos.webapp.api.promise.Promise
 import java.util.concurrent.CopyOnWriteArrayList
 
 class CommitCoordinatorImpl(
@@ -54,9 +55,11 @@ class CommitCoordinatorImpl(
                 commitObservation.observe {
                     remoteClient.onePhaseCommit(appToCommit, txnId)
                 }
-                actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT]).finally {
-                    disposeRoot(txnId, setOf(appToCommit), null)
-                }
+                disposeRootAfterActions(
+                    actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT]),
+                    txnId,
+                    setOf(appToCommit)
+                )
                 return
             }
         }
@@ -173,10 +176,11 @@ class CommitCoordinatorImpl(
                 repo.afterCommit(txnId, committedApps, commitErrors)
             }
             if (commitError == null) {
-                actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT])
-                    .finally {
-                        disposeRoot(txnId, txnApps, null)
-                    }
+                disposeRootAfterActions(
+                    actionsManager.executeActionsAfterCommit(txnId, txnLevel, data.actions[TxnActionType.AFTER_COMMIT]),
+                    txnId,
+                    txnApps
+                )
             } else {
                 /**
                  * A missing durable repository does not make rollback safe after partial commit.
@@ -295,6 +299,23 @@ class CommitCoordinatorImpl(
                 } else {
                     log.error(e) { "[$txnId] Something went wrong while txn disposing for app $app" }
                 }
+            }
+        }
+    }
+
+    /**
+     * After-commit actions complete on a pool thread, where the transaction of the committing
+     * thread is not current: the web layer would then send the dispose to any replica of a
+     * participant instead of the one that served the transaction. The dispose keeps that
+     * transaction as current, like a dispose made from the committing thread.
+     */
+    private fun disposeRootAfterActions(actions: Promise<Unit>, txnId: TxnId, apps: Collection<String>) {
+        val committingTxn = manager.getCurrentManagedTransaction()
+        actions.finally {
+            if (committingTxn == null) {
+                disposeRoot(txnId, apps, null)
+            } else {
+                manager.doWithCurrentTxn(committingTxn) { disposeRoot(txnId, apps, null) }
             }
         }
     }

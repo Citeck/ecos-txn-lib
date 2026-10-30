@@ -33,8 +33,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * A read-only root transaction (a records query in the gateway) enlists a participant branch
  * (emodel with a database connection). The participant holds its branch until the root tells it
  * to release, so the root must notify it after a returned and after a failed action alike, after
- * its own branch is disposed, without replacing its result or its error. A participant the root
- * never heard from is left to the inactivity job.
+ * its own branch is disposed, without replacing its result or its error. The notification is made
+ * with the root as the current transaction, so the web layer pins it to the replica that served
+ * the root. A participant the root never heard from is left to the inactivity job.
  */
 class ReadOnlyRootCompletionTest {
 
@@ -235,6 +236,9 @@ class ReadOnlyRootCompletionTest {
         assertThat(disposeCalls.map { it.app }).describedAs("one notification per participant").containsExactly("emodel")
         assertThat(disposeCalls.single().rootStatus).describedAs("root disposed before the notification").isEqualTo(TransactionStatus.NO_TRANSACTION)
         assertThat(disposeCalls.single().thread).describedAs("notification thread").isNotSameAs(Thread.currentThread())
+        assertThat(disposeCalls.single().currentTxnId)
+            .describedAs("root current in the notification: the web layer pins it to the replica that served the root")
+            .isEqualTo(txnId)
     }
 
     private fun awaitBranchReleased(txnId: TxnId) {
@@ -250,11 +254,13 @@ class ReadOnlyRootCompletionTest {
         check(condition()) { "$description did not happen within 2 s" }
     }
 
-    private class DisposeCall(val app: String, val rootStatus: TransactionStatus, val thread: Thread)
+    private class DisposeCall(val app: String, val rootStatus: TransactionStatus, val currentTxnId: TxnId?, val thread: Thread)
 
     private inner class GatewayRemoteClient(private val delegate: TxnManagerRemoteApiClient) : TxnManagerRemoteApiClient by delegate {
         override fun disposeTxn(app: String, txnId: TxnId) {
-            disposeCalls.add(DisposeCall(app, gateway.getStatus(txnId), Thread.currentThread()))
+            disposeCalls.add(
+                DisposeCall(app, gateway.getStatus(txnId), gateway.getCurrentTransaction()?.getId(), Thread.currentThread())
+            )
             disposeFailure?.let { throw it }
             delegate.disposeTxn(app, txnId)
         }
