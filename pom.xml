@@ -18,7 +18,7 @@
 
     <properties>
 
-        <revision>1.7.2-coredev660-SNAPSHOT</revision>
+        <revision>1.8.0</revision>
 
         <ecos.commons.version>3.3.0</ecos.commons.version>
         <ecos.test-commons.version>1.10.0</ecos.test-commons.version>
