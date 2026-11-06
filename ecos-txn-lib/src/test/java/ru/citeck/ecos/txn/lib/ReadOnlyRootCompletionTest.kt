@@ -20,6 +20,7 @@ import ru.citeck.ecos.txn.lib.transaction.ManagedTransaction
 import ru.citeck.ecos.txn.lib.transaction.Transaction
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import ru.citeck.ecos.webapp.api.promise.Promise
@@ -212,7 +213,7 @@ class ReadOnlyRootCompletionTest {
             override fun registerAction(type: TxnActionType, actionRef: TxnActionRef) {}
         }
         try {
-            emodel.doInExtTxn(root.getId(), ctx, TransactionPolicy.REQUIRED, true) {
+            emodel.doInExtTxn(root.getId(), ctx, TransactionPolicy.REQUIRED, true, TxnNesting.ROOT) {
                 emodel.getCurrentTransaction()!!.getOrAddRes("db") { _, id -> Resource(id) }
                 if (failure != null) {
                     throw failure

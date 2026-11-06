@@ -18,6 +18,7 @@ import ru.citeck.ecos.txn.lib.support.RoutingRemoteApiClient
 import ru.citeck.ecos.txn.lib.transaction.Transaction
 import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import javax.transaction.xa.XAResource
@@ -279,7 +280,7 @@ class InterposedSynchronizationTest {
             val managerBefore = TxnContext.getManager()
             TxnContext.setManager(manager)
             try {
-                manager.doInExtTxn(txnId, rootContext, TransactionPolicy.REQUIRED, false) { action() }
+                manager.doInExtTxn(txnId, rootContext, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) { action() }
             } finally {
                 TxnContext.setManager(managerBefore)
             }

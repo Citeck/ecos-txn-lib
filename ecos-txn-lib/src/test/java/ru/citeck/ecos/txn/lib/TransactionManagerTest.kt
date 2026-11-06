@@ -19,6 +19,7 @@ import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
@@ -457,7 +458,13 @@ class TransactionManagerTest {
         val extTxnId = TxnId.create("origin-app", "instance-0")
         val ctx = CapturingTxnManagerContext()
 
-        val firstCallSawData = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+        val firstCallSawData = txnManager.doInExtTxn(
+            extTxnId,
+            ctx,
+            TransactionPolicy.REQUIRED,
+            true,
+            TxnNesting.ROOT
+        ) { workCtx ->
             try {
                 val value = TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 assertThat(value).isEqualTo("computed-cache-key")
@@ -468,7 +475,13 @@ class TransactionManagerTest {
         }
         assertThat(firstCallSawData).isNotNull
 
-        val secondCallSawCache = txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+        val secondCallSawCache = txnManager.doInExtTxn(
+            extTxnId,
+            ctx,
+            TransactionPolicy.REQUIRED,
+            true,
+            TxnNesting.ROOT
+        ) { workCtx ->
             try {
                 val cached = TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key")["value"]
                 assertThat(cached)
@@ -490,7 +503,13 @@ class TransactionManagerTest {
         val extTxnId = TxnId.create("origin-app", "instance-0")
         val ctx = CapturingTxnManagerContext()
 
-        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+        txnManager.doInExtTxn(
+            extTxnId,
+            ctx,
+            TransactionPolicy.REQUIRED,
+            true,
+            TxnNesting.ROOT
+        ) { workCtx ->
             try {
                 // intentionally do nothing — no getData, no resources, no actions
                 Unit
@@ -516,7 +535,13 @@ class TransactionManagerTest {
         val extTxnId = TxnId.create("origin-app", "instance-0")
         val ctx = CapturingTxnManagerContext()
 
-        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+        txnManager.doInExtTxn(
+            extTxnId,
+            ctx,
+            TransactionPolicy.REQUIRED,
+            true,
+            TxnNesting.ROOT
+        ) { workCtx ->
             try {
                 TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 Unit
@@ -540,7 +565,13 @@ class TransactionManagerTest {
         val ctx = CapturingTxnManagerContext()
 
         // First call: RO that populates cache so the txn is kept alive across stopWork.
-        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, true) { workCtx ->
+        txnManager.doInExtTxn(
+            extTxnId,
+            ctx,
+            TransactionPolicy.REQUIRED,
+            true,
+            TxnNesting.ROOT
+        ) { workCtx ->
             try {
                 TxnContext.getTxn().getReadOnlyCache<String, String>("cache-key").getOrPut("value") { "computed-cache-key" }
                 Unit
@@ -553,7 +584,7 @@ class TransactionManagerTest {
             .isNotNull
 
         // Second call with the same extTxnId but readOnly = false.
-        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, false) { workCtx ->
+        txnManager.doInExtTxn(extTxnId, ctx, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) { workCtx ->
             try {
                 assertThat(TxnContext.getTxn().isReadOnly())
                     .describedAs("writable second call must see a non-RO local txn")

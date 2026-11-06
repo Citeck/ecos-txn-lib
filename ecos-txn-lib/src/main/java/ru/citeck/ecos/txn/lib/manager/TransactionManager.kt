@@ -8,6 +8,7 @@ import ru.citeck.ecos.txn.lib.transaction.ManagedTransaction
 import ru.citeck.ecos.txn.lib.transaction.Transaction
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 
@@ -51,6 +52,8 @@ interface TransactionManager {
      * @param extCtx The context of the external transaction manager.
      * @param policy The policy determining the transaction boundaries and behavior.
      * @param readOnly Whether the transaction is read-only.
+     * @param nesting Ancestry used when creating a local participant. Existing participants
+     *                retain their ancestry. Applies to REQUIRED and SUPPORTS.
      * @param action The action to execute within the external transaction, using an `ExtTxnWorkContext`.
      * @return The result of the action executed within the external transaction.
      */
@@ -59,6 +62,7 @@ interface TransactionManager {
         extCtx: TxnManagerContext,
         policy: TransactionPolicy,
         readOnly: Boolean,
+        nesting: TxnNesting,
         action: (ExtTxnWorkContext) -> T
     ): T
 

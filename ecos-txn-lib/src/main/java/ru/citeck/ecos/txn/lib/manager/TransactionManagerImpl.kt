@@ -176,6 +176,7 @@ class TransactionManagerImpl : TransactionManager {
         extCtx: TxnManagerContext,
         policy: TransactionPolicy,
         readOnly: Boolean,
+        nesting: TxnNesting,
         action: (ExtTxnWorkContext) -> T
     ): T {
 
@@ -186,7 +187,7 @@ class TransactionManagerImpl : TransactionManager {
                 if (extTxnId.isEmpty()) {
                     action.invoke(AlwaysStatelessExtTxnWorkContext)
                 } else {
-                    doInExtTxn(extTxnId, readOnly, extCtx, action)
+                    doInExtTxn(extTxnId, readOnly, extCtx, nesting, action)
                 }
             }
 
@@ -194,7 +195,7 @@ class TransactionManagerImpl : TransactionManager {
                 if (extTxnId.isEmpty()) {
                     doInNewTxn(readOnly) { action.invoke(AlwaysStatelessExtTxnWorkContext) }
                 } else {
-                    doInExtTxn(extTxnId, readOnly, extCtx, action)
+                    doInExtTxn(extTxnId, readOnly, extCtx, nesting, action)
                 }
             }
         }
@@ -204,6 +205,7 @@ class TransactionManagerImpl : TransactionManager {
         extTxnId: TxnId,
         readOnly: Boolean,
         ctx: TxnManagerContext,
+        incomingNesting: TxnNesting,
         action: (ExtTxnWorkContext) -> T
     ): T {
 
@@ -213,6 +215,7 @@ class TransactionManagerImpl : TransactionManager {
         // RO local copy and create a fresh non-readonly one. The cached snapshot is
         // invalidated either way as soon as a writable action runs against the same data.
         val existing = transactionsById[extTxnId]
+        val retainedNesting = existing?.transaction?.let { TxnNesting.of(it) }
         if (existing != null && existing.transaction.isReadOnly() && !readOnly) {
             dispose(extTxnId)
         }
@@ -220,8 +223,16 @@ class TransactionManagerImpl : TransactionManager {
         var isNewLocalTxn = false
 
         val transaction = transactionsById.computeIfAbsent(extTxnId) {
+            val nesting = retainedNesting ?: incomingNesting
+            require(nesting.parentId != extTxnId) { "Transaction cannot be its own parent" }
             isNewLocalTxn = true
-            val txn = TransactionImpl(it, webAppProps.appName, readOnly, micrometerContext)
+            val txn = TransactionImpl(
+                it,
+                webAppProps.appName,
+                readOnly,
+                micrometerContext,
+                nesting
+            )
             txn.start()
             TransactionInfo(txn)
         }.transaction
@@ -285,7 +296,13 @@ class TransactionManagerImpl : TransactionManager {
         if (txnLevel >= 10) {
             error("Transaction actions level overflow error")
         }
-        val transaction = TransactionImpl(newTxnId, webAppProps.appName, readOnly, micrometerContext)
+        val transaction = TransactionImpl(
+            newTxnId,
+            webAppProps.appName,
+            readOnly,
+            micrometerContext,
+            TxnNesting.childOf(currentTxn.get())
+        )
 
         val actions = TxnActionsContainer(newTxnId, this)
         val xidsByApp = LinkedHashMap<String, MutableSet<EcosXid>>()
@@ -352,6 +369,10 @@ class TransactionManagerImpl : TransactionManager {
                         if (transactionsById.containsKey(newTxnId)) {
                             dispose(newTxnId)
                         }
+                    } else if (transaction.isEmpty() && xidsByApp.isEmpty()) {
+                        // No resource or participant was enlisted and coordination has not started.
+                        // Journal cleanup would start another transaction and recurse on pool failure.
+                        dispose(newTxnId)
                     } else {
                         commitCoordinator.rollbackRoot(
                             newTxnId,

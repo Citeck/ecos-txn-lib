@@ -19,6 +19,7 @@ import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.ManagedTransaction
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.io.IOException
@@ -209,7 +210,7 @@ class DelegatedCommitTransportFailureTest {
                     collected.addAll(xids)
                 }
             }
-            coordinator.doInExtTxn(txnId, ctx, TransactionPolicy.REQUIRED, false) {
+            coordinator.doInExtTxn(txnId, ctx, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) {
                 val txn = coordinator.getCurrentTransaction()!!
                 resources.forEach { name -> txn.getOrAddRes(name) { _, id -> TestResource(name, id) } }
             }
@@ -282,7 +283,9 @@ class DelegatedCommitTransportFailureTest {
 
         private fun <T> exec(app: String, txnId: TxnId, action: (TransactionManagerImpl) -> T): T {
             val manager = resolve(app) ?: error("No manager for '$app'")
-            return manager.doInExtTxn(txnId, responseCtx, TransactionPolicy.REQUIRED, false) { action(manager) }
+            return manager.doInExtTxn(txnId, responseCtx, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) {
+                action(manager)
+            }
         }
 
         override fun prepareCommit(app: String, txnId: TxnId) = exec(app, txnId) { it.prepareCommitFromExtManager(txnId, true) }

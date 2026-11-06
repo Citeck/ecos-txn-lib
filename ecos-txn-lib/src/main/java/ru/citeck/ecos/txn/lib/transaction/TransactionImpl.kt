@@ -25,7 +25,8 @@ class TransactionImpl(
     private val txnId: TxnId,
     private val currentAppName: String,
     initialReadOnly: Boolean,
-    private val micrometerContext: EcosMicrometerContext
+    private val micrometerContext: EcosMicrometerContext,
+    val nesting: TxnNesting = TxnNesting.ROOT
 ) : ManagedTransaction {
 
     companion object {

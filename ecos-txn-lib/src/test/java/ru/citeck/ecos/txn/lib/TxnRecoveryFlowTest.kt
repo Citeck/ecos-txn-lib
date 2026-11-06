@@ -26,6 +26,7 @@ import ru.citeck.ecos.txn.lib.transaction.TransactionImpl
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TransactionSynchronization
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.TxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
@@ -385,7 +386,8 @@ class TxnRecoveryFlowTest {
                     txnId,
                     remoteContext,
                     TransactionPolicy.REQUIRED,
-                    false
+                    false,
+                    TxnNesting.ROOT
                 ) {
                     delegate.executeTxnAction(app, txnId, actionId)
                 }
@@ -418,7 +420,8 @@ class TxnRecoveryFlowTest {
                         rootTxn.getId(),
                         remoteContext,
                         TransactionPolicy.REQUIRED,
-                        false
+                        false,
+                        TxnNesting.ROOT
                     ) {
                         val remoteTxn = participant.manager.getManagedTransaction(rootTxn.getId())
                         remoteTxn.getOrAddRes("remote") { _, id -> TestResource("remote", id, events) }

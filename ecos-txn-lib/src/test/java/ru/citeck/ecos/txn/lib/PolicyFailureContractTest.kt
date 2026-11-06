@@ -12,6 +12,7 @@ import ru.citeck.ecos.txn.lib.manager.EcosTxnProps
 import ru.citeck.ecos.txn.lib.manager.TransactionManagerImpl
 import ru.citeck.ecos.txn.lib.manager.TransactionPolicy
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.NoopTxnManagerContext
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
@@ -43,7 +44,7 @@ class PolicyFailureContractTest {
                     TxnContext.doInTxn {
                         val parent = TxnContext.getTxn()
                         assertThatThrownBy {
-                            manager.doInExtTxn(external, NoopTxnManagerContext, policy, false) { work ->
+                            manager.doInExtTxn(external, NoopTxnManagerContext, policy, false, TxnNesting.ROOT) { work ->
                                 try {
                                     val current = TxnContext.getTxnOrNull()
                                     when (policy) {

@@ -13,6 +13,7 @@ import ru.citeck.ecos.txn.lib.resource.CommitPrepareStatus
 import ru.citeck.ecos.txn.lib.resource.TransactionResource
 import ru.citeck.ecos.txn.lib.transaction.TransactionStatus
 import ru.citeck.ecos.txn.lib.transaction.TxnId
+import ru.citeck.ecos.txn.lib.transaction.TxnNesting
 import ru.citeck.ecos.txn.lib.transaction.ctx.NoopTxnManagerContext
 import ru.citeck.ecos.txn.lib.transaction.xid.EcosXid
 import java.util.concurrent.CopyOnWriteArrayList
@@ -143,8 +144,10 @@ class UnpreparedBranchAbortTest {
         assertThat(ids.map { branches.contains(it) }).containsExactly(false, false, false)
     }
 
-    private fun prepareInRecreatedContext(manager: TransactionManagerImpl, txnId: TxnId) = manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false) {
-        manager.prepareCommitFromExtManager(txnId, true)
+    private fun prepareInRecreatedContext(manager: TransactionManagerImpl, txnId: TxnId) {
+        manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) {
+            manager.prepareCommitFromExtManager(txnId, true)
+        }
     }
 
     private fun awaitState(thread: Thread, state: Thread.State) {
@@ -165,7 +168,7 @@ class UnpreparedBranchAbortTest {
 
     private fun addBranch(manager: TransactionManagerImpl, onPrepare: () -> Unit = {}): TxnId {
         val txnId = TxnId.create("origin", "instance")
-        manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false) {
+        manager.doInExtTxn(txnId, NoopTxnManagerContext, TransactionPolicy.REQUIRED, false, TxnNesting.ROOT) {
             manager.getCurrentTransaction()!!.getOrAddRes("res") { _, id -> Resource(id, onPrepare) }
         }
         return txnId
